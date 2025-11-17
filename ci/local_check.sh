@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-: "${LOCAL_CHECK_ONLINE:=0}"
+: "${LOCAL_CHECK_ONLINE:=1}"
 : "${CI:=1}"
 : "${RUN_HOST:=never}"
 

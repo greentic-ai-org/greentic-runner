@@ -79,6 +79,19 @@ struct PackManifest {
     name: Option<String>,
 }
 
+#[derive(Debug)]
+pub struct PackMetadata {
+    pub name: String,
+    pub flows: Vec<FlowMetadata>,
+    pub hints: BindingsHints,
+}
+
+#[derive(Debug)]
+pub struct FlowMetadata {
+    pub name: String,
+    pub document: Value,
+}
+
 #[derive(Clone, Default)]
 pub struct GeneratorOptions {
     pub strict: bool,

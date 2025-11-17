@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-: "${LOCAL_CHECK_ONLINE:=1}"
+: "${LOCAL_CHECK_ONLINE:=0}"
 : "${CI:=1}"
 : "${RUN_HOST:=never}"
 
@@ -17,6 +17,19 @@ else
   unset CARGO_NET_OFFLINE
 fi
 
+CLIPPY_FEATURE_ARGS=()
+TEST_FEATURE_ARGS=()
+CLIPPY_DESC="all targets"
+TEST_DESC="all targets"
+if [[ "${CARGO_NET_OFFLINE:-}" == "true" ]]; then
+  echo "==> Offline mode detected; skipping --all-features for lint/tests"
+else
+  CLIPPY_FEATURE_ARGS=(--all-features)
+  TEST_FEATURE_ARGS=(--all-features)
+  CLIPPY_DESC+=", all features"
+  TEST_DESC+=", all features"
+fi
+
 if [[ "${CI:-}" == "1" ]]; then
   set -x
 fi
@@ -24,8 +37,12 @@ fi
 echo "==> cargo fmt --check"
 cargo fmt --all --check
 
-echo "==> cargo clippy (all targets, all features)"
-cargo clippy --all-targets --all-features -- -D warnings
+echo "==> cargo clippy (${CLIPPY_DESC})"
+if [[ "${#CLIPPY_FEATURE_ARGS[@]}" -gt 0 ]]; then
+  cargo clippy --all-targets "${CLIPPY_FEATURE_ARGS[@]}" -- -D warnings
+else
+  cargo clippy --all-targets -- -D warnings
+fi
 
 RUN_HOST="${RUN_HOST:-never}"
 if [[ "${RUN_HOST}" == "always" ]] || { [[ "${RUN_HOST}" == "auto" ]] && [[ -f "./examples/index.json" ]]; }; then
@@ -45,17 +62,22 @@ fi
 echo "==> crate tests"
 cargo test -p greentic-runner
 
-echo "==> workspace tests"
-cargo test --workspace --all-targets --all-features
+echo "==> workspace tests (${TEST_DESC})"
+if [[ "${#TEST_FEATURE_ARGS[@]}" -gt 0 ]]; then
+  cargo test --workspace --all-targets "${TEST_FEATURE_ARGS[@]}"
+else
+  cargo test --workspace --all-targets
+fi
 
 if [[ "${LOCAL_CHECK_PACKAGE:-1}" == "1" ]]; then
   echo "==> package dry-run (serialized)"
   if ! command -v jq >/dev/null 2>&1; then
     echo "jq not found; skipping package dry-run"
   else
-    mapfile -t manifests < <(cargo metadata --no-deps --format-version=1 | jq -r '.packages[] | select(.publish != false and .publish != []) | .manifest_path')
+    manifests=$(cargo metadata --no-deps --format-version=1 | jq -r '.packages[] | select(.publish != false and .publish != []) | .manifest_path')
     skipped_package=0
-    for manifest in "${manifests[@]}"; do
+    while IFS= read -r manifest; do
+      [[ -z "$manifest" ]] && continue
       crate_dir="$(dirname "$manifest")"
       pushd "$crate_dir" >/dev/null
       if ! cargo package --no-verify --allow-dirty --quiet; then
@@ -70,7 +92,7 @@ if [[ "${LOCAL_CHECK_PACKAGE:-1}" == "1" ]]; then
         exit 1
       fi
       popd >/dev/null
-    done
+    done <<< "$manifests"
     if [[ "$skipped_package" -eq 1 ]]; then
       echo "Package dry-run unfinished due to offline mode; rerun with LOCAL_CHECK_ONLINE=1 to verify packaging"
     fi

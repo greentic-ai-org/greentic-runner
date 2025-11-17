@@ -29,7 +29,7 @@ greentic-pack.workspace = true
 greentic-types.workspace = true
 greentic-session.workspace = true
 greentic-state.workspace = true
-greentic-secrets = { version = "0.3.6", path = "../greentic-secrets" }
+greentic-secrets.workspace = true
 handlebars.workspace = true
 hex.workspace = true
 humantime.workspace = true
@@ -38,7 +38,7 @@ lru.workspace = true
 parking_lot.workspace = true
 rand.workspace = true
 reqwest.workspace = true
-runner-core = { version = "0.3.6", path = "../runner-core" }
+runner-core.workspace = true
 serde = { workspace = true }
 serde_cbor.workspace = true
 serde_json.workspace = true
@@ -58,7 +58,7 @@ hmac = "0.12"
 sha1 = "0.10"
 
 # External stack components
-greentic_mcp = { package = "mcp-exec", version = "0.3", optional = true }
+greentic_mcp = { workspace = true, optional = true }
 wasmtime = { version = "38", default-features = false, features = ["component-model", "cranelift", "runtime", "std"] }
 wasmtime-wasi = { version = "38", default-features = false, features = ["p2"] }
 greentic-telemetry = { version = "0.3", optional = true }

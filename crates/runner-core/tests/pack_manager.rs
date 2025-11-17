@@ -17,6 +17,7 @@ fn sample_meta() -> PackMeta {
         pack_id: "ai.greentic.runner.tests".into(),
         version: Version::parse("0.1.0").unwrap(),
         name: "Test Runner".into(),
+        kind: None,
         description: None,
         authors: vec!["Greentic".into()],
         license: None,

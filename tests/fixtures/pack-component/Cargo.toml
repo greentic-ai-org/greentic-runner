@@ -1,0 +1,12 @@
+[package]
+name = "pack-component"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wit-bindgen = { version = "0.47.0", default-features = false, features = ["std", "macros"] }

@@ -77,6 +77,7 @@ fn example_meta() -> PackMeta {
         pack_id: "ai.greentic.runner.example".into(),
         version: Version::parse("0.1.0").unwrap(),
         name: "Runner Example".into(),
+        kind: None,
         description: Some("Minimal pack for fs resolver showcase".into()),
         authors: vec!["Greentic".into()],
         license: None,

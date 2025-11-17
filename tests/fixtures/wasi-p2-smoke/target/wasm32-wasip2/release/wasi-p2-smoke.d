@@ -1,1 +1,1 @@
-/projects/ai/greentic-ng/greentic-runner/tests/fixtures/wasi-p2-smoke/target/wasm32-wasip2/release/wasi-p2-smoke.wasm: /projects/ai/greentic-ng/greentic-runner/tests/fixtures/wasi-p2-smoke/src/main.rs
+/Users/maarten/Documents/GitHub/agentic/greentic-runner/tests/fixtures/wasi-p2-smoke/target/wasm32-wasip2/release/wasi-p2-smoke.wasm: /Users/maarten/Documents/GitHub/agentic/greentic-runner/tests/fixtures/wasi-p2-smoke/src/main.rs

@@ -22,7 +22,6 @@ pub struct HostConfig {
     pub http_enabled: bool,
     pub secrets_policy: SecretsPolicy,
     pub webhook_policy: WebhookPolicy,
-    pub timers: Vec<TimerBinding>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -33,8 +32,6 @@ pub struct BindingsFile {
     pub mcp: McpConfig,
     #[serde(default)]
     pub rate_limits: RateLimits,
-    #[serde(default)]
-    pub timers: Vec<TimerBinding>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -95,14 +92,6 @@ pub struct WebhookBindingConfig {
     pub deny_paths: Vec<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-pub struct TimerBinding {
-    pub flow_id: String,
-    pub cron: String,
-    #[serde(default)]
-    pub schedule_id: Option<String>,
-}
-
 impl HostConfig {
     pub fn load_from_path(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
@@ -139,7 +128,6 @@ impl HostConfig {
             http_enabled,
             secrets_policy,
             webhook_policy,
-            timers: bindings.timers.clone(),
         })
     }
 
@@ -241,12 +229,6 @@ impl WebhookPolicy {
     }
 }
 
-impl TimerBinding {
-    pub fn schedule_id(&self) -> &str {
-        self.schedule_id.as_deref().unwrap_or(self.flow_id.as_str())
-    }
-}
-
 #[cfg(feature = "mcp")]
 #[derive(Debug, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
@@ -271,6 +253,12 @@ struct RuntimeBinding {
     timeout_ms: Option<u64>,
     #[serde(default)]
     fuel: Option<u64>,
+    #[serde(default)]
+    per_call_timeout_ms: Option<u64>,
+    #[serde(default)]
+    max_attempts: Option<u32>,
+    #[serde(default)]
+    base_backoff_ms: Option<u64>,
 }
 
 #[cfg(feature = "mcp")]
@@ -314,6 +302,11 @@ impl McpConfig {
             fuel: runtime_cfg.fuel,
             max_memory: runtime_cfg.max_memory_mb.map(|mb| mb * 1024 * 1024),
             wallclock_timeout: Duration::from_millis(runtime_cfg.timeout_ms.unwrap_or(30_000)),
+            per_call_timeout: Duration::from_millis(
+                runtime_cfg.per_call_timeout_ms.unwrap_or(10_000),
+            ),
+            max_attempts: runtime_cfg.max_attempts.unwrap_or(1),
+            base_backoff: Duration::from_millis(runtime_cfg.base_backoff_ms.unwrap_or(100)),
         };
 
         let security = VerifyPolicy {

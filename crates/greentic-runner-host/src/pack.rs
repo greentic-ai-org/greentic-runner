@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, HashMap};
+use std::env;
 use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -15,7 +16,10 @@ use greentic_interfaces::host_import_v0_2::greentic::host_import::imports::{
 };
 use greentic_interfaces::host_import_v0_6::{self, iface_types, state, types};
 use greentic_interfaces::pack_export_v0_2;
-use greentic_interfaces::pack_export_v0_2::exports::greentic::pack_export::exports::FlowInfo;
+use greentic_interfaces::pack_export_v0_2::exports::greentic::pack_export::exports::{
+    Cloud, DeploymentCtx, FlowInfo, IfaceError as PackIfaceError, Platform, RunOpts, RunResult,
+    TenantCtx as PackTenantCtx,
+};
 #[cfg(feature = "mcp")]
 use greentic_mcp::{ExecConfig, ExecError, ExecRequest};
 use greentic_session::SessionKey as StoreSessionKey;
@@ -29,7 +33,7 @@ use serde::{Deserialize, Serialize};
 use serde_cbor;
 use serde_json::{self, Value, json};
 use serde_yaml_bw as serde_yaml;
-use tokio::fs;
+use tokio::{fs, task};
 use wasmparser::{Parser, Payload};
 use zip::ZipArchive;
 
@@ -229,6 +233,7 @@ unsafe impl Send for ComponentState {}
 #[allow(unsafe_code)]
 unsafe impl Sync for ComponentState {}
 
+#[allow(clippy::needless_return)]
 impl host_import_v0_6::HostImports for ComponentState {
     fn secrets_get(
         &mut self,
@@ -290,6 +295,7 @@ impl host_import_v0_6::HostImports for ComponentState {
     }
 }
 
+#[allow(clippy::needless_return)]
 impl host_import_v0_2::HostImports for ComponentState {
     fn secrets_get(
         &mut self,
@@ -391,7 +397,7 @@ impl host_import_v0_6::HostImports for HostState {
         {
             let _ = (component, action, args_json, ctx);
             tracing::warn!("mcp.exec requested but crate built without `mcp` feature");
-            return Ok(Err(types::IfaceError::Unavailable));
+            Ok(Err(types::IfaceError::Unavailable))
         }
         #[cfg(feature = "mcp")]
         {
@@ -619,7 +625,7 @@ impl greentic_interfaces::host_import_v0_2::HostImports for HostState {
         {
             let _ = (tool, action, args_json, ctx);
             tracing::warn!("tool invoke requested but crate built without `mcp` feature");
-            return Ok(Err(LegacyIfaceError::Unavailable));
+            Ok(Err(LegacyIfaceError::Unavailable))
         }
 
         #[cfg(feature = "mcp")]
@@ -899,14 +905,144 @@ impl PackRuntime {
         Ok(flows)
     }
 
-    #[allow(dead_code)]
     pub async fn run_flow(
         &self,
-        _flow_id: &str,
-        _input: serde_json::Value,
+        flow_id: &str,
+        input: serde_json::Value,
     ) -> Result<serde_json::Value> {
-        // TODO: dispatch flow execution via Wasmtime
-        Ok(serde_json::json!({}))
+        let component = self.component.clone();
+        let config = Arc::clone(&self.config);
+        let mocks = self.mocks.clone();
+        let session_store = self.session_store.clone();
+        let state_store = self.state_store.clone();
+        let wasi_policy = Arc::clone(&self.wasi_policy);
+        let engine = self.engine.clone();
+        let flow_name = flow_id.to_string();
+        let run_opts = self.default_run_opts();
+        task::spawn_blocking(move || {
+            Self::run_flow_blocking(
+                component,
+                config,
+                mocks,
+                session_store,
+                state_store,
+                wasi_policy,
+                engine,
+                flow_name,
+                run_opts,
+                input,
+            )
+        })
+        .await?
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn run_flow_blocking(
+        component: Option<Component>,
+        config: Arc<HostConfig>,
+        mocks: Option<Arc<MockLayer>>,
+        session_store: Option<DynSessionStore>,
+        state_store: Option<DynStateStore>,
+        wasi_policy: Arc<RunnerWasiPolicy>,
+        engine: Engine,
+        flow_id: String,
+        run_opts: Option<RunOpts>,
+        input: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        let component = component.ok_or_else(|| anyhow!("pack component unavailable"))?;
+        let host_state = HostState::new(config, mocks, session_store, state_store)?;
+        let mut store = Store::new(
+            &engine,
+            ComponentState::new(host_state, Arc::clone(&wasi_policy))?,
+        );
+        let mut linker = Linker::new(&engine);
+        imports::register_all(&mut linker)?;
+        let bindings = pack_export_v0_2::PackExports::instantiate(&mut store, &component, &linker)?;
+        let exports = bindings.greentic_pack_export_exports();
+        let payload = serde_json::to_string(&input)
+            .with_context(|| format!("failed to encode input for {}", flow_id))?;
+        let mut caller = ExportsCaller::new(store, exports);
+        let flow_name = flow_id.as_str();
+        Self::invoke_run_flow(
+            &mut caller,
+            flow_name,
+            flow_name,
+            &payload,
+            run_opts.as_ref(),
+        )
+    }
+
+    fn default_run_opts(&self) -> Option<RunOpts> {
+        let tenant_ctx = PackTenantCtx {
+            tenant: self.config.tenant.clone(),
+            team: None,
+            user: None,
+            deployment: DeploymentCtx {
+                cloud: Cloud::Local,
+                region: None,
+                platform: Platform::Other,
+                runtime: Some(
+                    env::var("GREENTIC_RUNTIME").unwrap_or_else(|_| "greentic-runner-host".into()),
+                ),
+            },
+            trace_id: None,
+        };
+        Some(RunOpts {
+            tenant: Some(tenant_ctx),
+            timeout_ms: None,
+            fuel_units: None,
+        })
+    }
+
+    fn map_run_result(result: RunResult) -> serde_json::Value {
+        let mut body = serde_json::Map::new();
+        body.insert("status".into(), Value::String(result.status));
+        if let Some(output) = result.output_json {
+            body.insert("response".into(), Self::parse_json_or_string(output));
+        }
+        if let Some(error) = result.error {
+            body.insert("error".into(), Value::String(error));
+        }
+        if let Some(logs) = result.logs_json {
+            body.insert("logs".into(), Self::parse_json_or_string(logs));
+        }
+        if let Some(metrics) = result.metrics_json {
+            body.insert("metrics".into(), Self::parse_json_or_string(metrics));
+        }
+        Value::Object(body)
+    }
+
+    fn parse_json_or_string(raw: String) -> Value {
+        serde_json::from_str(&raw).unwrap_or(Value::String(raw))
+    }
+
+    fn describe_iface_error(err: PackIfaceError) -> &'static str {
+        match err {
+            PackIfaceError::InvalidArg => "invalid argument",
+            PackIfaceError::NotFound => "flow not found",
+            PackIfaceError::Denied => "request denied",
+            PackIfaceError::Unavailable => "pack runtime unavailable",
+            PackIfaceError::Internal => "pack runtime internal error",
+        }
+    }
+
+    fn invoke_run_flow<I: RunFlowInvoker>(
+        invoker: &mut I,
+        flow_id: &str,
+        flow_name: &str,
+        payload: &str,
+        opts: Option<&RunOpts>,
+    ) -> Result<serde_json::Value> {
+        let run_result = match invoker.call_run_flow(flow_name, payload, opts)? {
+            Ok(result) => result,
+            Err(err) => {
+                bail!(
+                    "pack run_flow({flow_id}) failed: {}",
+                    Self::describe_iface_error(err)
+                );
+            }
+        };
+        Ok(Self::map_run_result(run_result))
     }
 
     pub fn load_flow_ir(&self, flow_id: &str) -> Result<greentic_flow::ir::FlowIR> {
@@ -949,6 +1085,145 @@ impl PackRuntime {
 
     pub fn metadata(&self) -> &PackMetadata {
         &self.metadata
+    }
+}
+
+trait RunFlowInvoker {
+    fn call_run_flow(
+        &mut self,
+        flow_name: &str,
+        payload: &str,
+        opts: Option<&RunOpts>,
+    ) -> WasmResult<Result<RunResult, PackIfaceError>>;
+}
+
+struct ExportsCaller<'a> {
+    store: Store<ComponentState>,
+    exports: &'a pack_export_v0_2::exports::greentic::pack_export::exports::Guest,
+}
+
+impl<'a> ExportsCaller<'a> {
+    fn new(
+        store: Store<ComponentState>,
+        exports: &'a pack_export_v0_2::exports::greentic::pack_export::exports::Guest,
+    ) -> Self {
+        Self { store, exports }
+    }
+}
+
+impl<'a> RunFlowInvoker for ExportsCaller<'a> {
+    fn call_run_flow(
+        &mut self,
+        flow_name: &str,
+        payload: &str,
+        opts: Option<&RunOpts>,
+    ) -> WasmResult<Result<RunResult, PackIfaceError>> {
+        let flow_owned = flow_name.to_string();
+        self.exports
+            .call_run_flow(&mut self.store, &flow_owned, payload, opts)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn invoke_run_flow_maps_successful_result() {
+        let result = RunResult {
+            status: "done".into(),
+            output_json: Some(json!({ "ok": true }).to_string()),
+            error: None,
+            logs_json: Some(json!(["log entry"]).to_string()),
+            metrics_json: Some(json!({"latency_ms": 12}).to_string()),
+        };
+        let mut invoker =
+            MockInvoker::new(MockResponse::Ok(result), "flow.demo", "{\"text\":\"hi\"}");
+        let flow_name = "flow.demo";
+        let value = PackRuntime::invoke_run_flow(
+            &mut invoker,
+            "flow.demo",
+            flow_name,
+            "{\"text\":\"hi\"}",
+            None,
+        )
+        .expect("run_flow success");
+        assert_eq!(value["status"], "done");
+        assert_eq!(value["response"]["ok"], json!(true));
+        assert_eq!(value["logs"][0], json!("log entry"));
+        assert_eq!(value["metrics"]["latency_ms"], json!(12));
+    }
+
+    #[test]
+    fn invoke_run_flow_reports_iface_error() {
+        let mut invoker = MockInvoker::new(
+            MockResponse::Iface(PackIfaceError::NotFound),
+            "flow.demo",
+            "{}",
+        );
+        let flow_name = "flow.demo";
+        let err = PackRuntime::invoke_run_flow(&mut invoker, "flow.demo", flow_name, "{}", None)
+            .expect_err("expected failure");
+        assert!(
+            err.to_string().contains("flow not found"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn invoke_run_flow_bubbles_trap() {
+        let mut invoker = MockInvoker::new(MockResponse::Trap("trap failure"), "flow.demo", "{}");
+        let flow_name = "flow.demo";
+        let err = PackRuntime::invoke_run_flow(&mut invoker, "flow.demo", flow_name, "{}", None)
+            .expect_err("expected trap");
+        assert!(
+            err.to_string().contains("trap failure"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[derive(Clone)]
+    enum MockResponse {
+        Ok(RunResult),
+        Iface(PackIfaceError),
+        Trap(&'static str),
+    }
+
+    struct MockInvoker {
+        response: MockResponse,
+        expected_flow: &'static str,
+        expected_payload: &'static str,
+        calls: usize,
+    }
+
+    impl MockInvoker {
+        fn new(response: MockResponse, expected_flow: &'static str, payload: &'static str) -> Self {
+            Self {
+                response,
+                expected_flow,
+                expected_payload: payload,
+                calls: 0,
+            }
+        }
+    }
+
+    impl RunFlowInvoker for MockInvoker {
+        fn call_run_flow(
+            &mut self,
+            flow_name: &str,
+            payload: &str,
+            _opts: Option<&RunOpts>,
+        ) -> WasmResult<Result<RunResult, PackIfaceError>> {
+            self.calls += 1;
+            assert_eq!(flow_name, self.expected_flow);
+            assert_eq!(payload, self.expected_payload);
+            match &self.response {
+                MockResponse::Ok(result) => Ok(Ok(result.clone())),
+                MockResponse::Iface(err) => Ok(Err(*err)),
+                MockResponse::Trap(msg) => Err(wasmtime::Error::msg(*msg)),
+            }
+        }
     }
 }
 

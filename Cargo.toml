@@ -34,10 +34,10 @@ greentic-types = { version = "0.4", features = ["telemetry-autoinit"] }
 greentic-pack = { version = "0.4" }
 greentic-session = "0.4"
 greentic-state = "0.4"
-greentic-runner-host = { path = "crates/greentic-runner-host" }
-greentic-runner-desktop = { path = "crates/greentic-runner-desktop" }
-runner-core = { path = "crates/runner-core" }
-greentic-secrets = { path = "crates/greentic-secrets" }
+greentic-runner-host = { path = "crates/greentic-runner-host", version = "0.4.0" }
+greentic-runner-desktop = { path = "crates/greentic-runner-desktop", version = "0.4.0" }
+runner-core = { path = "crates/runner-core", version = "0.4.0" }
+greentic-secrets = { path = "crates/greentic-secrets", version = "0.4.0" }
 hex = "0.4"
 humantime = "2.1"
 lru = "0.16"

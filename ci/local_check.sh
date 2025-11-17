@@ -15,6 +15,20 @@ if [[ "$ONLINE" -eq 0 ]]; then
   export CARGO_NET_OFFLINE=true
 else
   unset CARGO_NET_OFFLINE
+  FETCH_OK=0
+  for attempt in 1 2 3; do
+    if cargo fetch >/dev/null 2>&1; then
+      FETCH_OK=1
+      break
+    fi
+    echo "==> cargo fetch attempt ${attempt} failed; retrying..."
+    sleep 2
+  done
+  if [[ "$FETCH_OK" -ne 1 ]]; then
+    echo "==> cargo fetch failed after retries; falling back to offline mode"
+    export CARGO_NET_OFFLINE=true
+    ONLINE=0
+  fi
 fi
 
 CLIPPY_FEATURE_ARGS=()

@@ -253,6 +253,12 @@ struct RuntimeBinding {
     timeout_ms: Option<u64>,
     #[serde(default)]
     fuel: Option<u64>,
+    #[serde(default)]
+    per_call_timeout_ms: Option<u64>,
+    #[serde(default)]
+    max_attempts: Option<u32>,
+    #[serde(default)]
+    base_backoff_ms: Option<u64>,
 }
 
 #[cfg(feature = "mcp")]
@@ -296,6 +302,11 @@ impl McpConfig {
             fuel: runtime_cfg.fuel,
             max_memory: runtime_cfg.max_memory_mb.map(|mb| mb * 1024 * 1024),
             wallclock_timeout: Duration::from_millis(runtime_cfg.timeout_ms.unwrap_or(30_000)),
+            per_call_timeout: Duration::from_millis(
+                runtime_cfg.per_call_timeout_ms.unwrap_or(10_000),
+            ),
+            max_attempts: runtime_cfg.max_attempts.unwrap_or(1),
+            base_backoff: Duration::from_millis(runtime_cfg.base_backoff_ms.unwrap_or(100)),
         };
 
         let security = VerifyPolicy {

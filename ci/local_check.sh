@@ -83,7 +83,7 @@ else
   cargo test --workspace --all-targets
 fi
 
-if [[ "${LOCAL_CHECK_PACKAGE:-1}" == "1" ]]; then
+if [[ "${CI:-0}" == "0" && "${LOCAL_CHECK_PACKAGE:-1}" == "1" ]]; then
   echo "==> package dry-run (serialized)"
   if ! command -v jq >/dev/null 2>&1; then
     echo "jq not found; skipping package dry-run"

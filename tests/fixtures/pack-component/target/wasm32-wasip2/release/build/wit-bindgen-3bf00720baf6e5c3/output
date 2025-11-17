@@ -1,0 +1,2 @@
+cargo:rustc-link-lib=static=wit_bindgen_cabi0_47_0
+cargo:rustc-link-search=native=/Users/maarten/Documents/GitHub/agentic/greentic-runner/tests/fixtures/pack-component/target/wasm32-wasip2/release/build/wit-bindgen-3bf00720baf6e5c3/out

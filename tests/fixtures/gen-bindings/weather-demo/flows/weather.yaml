@@ -1,0 +1,14 @@
+name: weather_flow
+steps:
+  - fetch_weather:
+      request_url: "https://api.weather.example.com/data?city={{ env.WEATHER_CITY }}"
+      headers:
+        Authorization: "{{ secrets.WEATHER_API_KEY }}"
+  - summarize_forecast:
+      note: "Call MCP component to format forecast"
+      tool:
+        mcp.exec:
+          component: "weather.tools"
+          action: "summarize"
+          args:
+            query: "{{ env.WEATHER_CITY }}"

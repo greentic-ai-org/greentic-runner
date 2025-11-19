@@ -1,0 +1,9 @@
+network:
+  allow:
+    - https://alerts.weather.example.com
+secrets:
+  required:
+    - ALERTS_TOKEN
+env:
+  passthrough:
+    - ALERTS_REGION

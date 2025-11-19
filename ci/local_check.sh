@@ -53,9 +53,10 @@ if [[ "${LOCAL_CHECK_PACKAGE:-1}" == "1" ]]; then
   if ! command -v jq >/dev/null 2>&1; then
     echo "jq not found; skipping package dry-run"
   else
-    mapfile -t manifests < <(cargo metadata --no-deps --format-version=1 | jq -r '.packages[] | select(.publish != false and .publish != []) | .manifest_path')
+    manifests=$(cargo metadata --no-deps --format-version=1 | jq -r '.packages[] | select(.publish != false and .publish != []) | .manifest_path')
     skipped_package=0
-    for manifest in "${manifests[@]}"; do
+    while IFS= read -r manifest; do
+      [[ -z "$manifest" ]] && continue
       crate_dir="$(dirname "$manifest")"
       pushd "$crate_dir" >/dev/null
       if ! cargo package --no-verify --allow-dirty --quiet; then
@@ -70,7 +71,7 @@ if [[ "${LOCAL_CHECK_PACKAGE:-1}" == "1" ]]; then
         exit 1
       fi
       popd >/dev/null
-    done
+    done <<< "$manifests"
     if [[ "$skipped_package" -eq 1 ]]; then
       echo "Package dry-run unfinished due to offline mode; rerun with LOCAL_CHECK_ONLINE=1 to verify packaging"
     fi

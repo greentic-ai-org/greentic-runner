@@ -1,0 +1,18 @@
+tenant: Weather Demo Strict Pack
+env_passthrough:
+- ALERTS_REGION
+- OTEL_EXPORTER_OTLP_ENDPOINT
+- OTEL_RESOURCE_ATTRIBUTES
+- RUST_LOG
+network_allow:
+- https://alerts.weather.example.com
+secrets_required:
+- ALERTS_TOKEN
+flows:
+- name: alerts_flow
+  urls:
+  - https://alerts.weather.example.com
+  secrets:
+  - ALERTS_TOKEN
+  env:
+  - ALERTS_REGION

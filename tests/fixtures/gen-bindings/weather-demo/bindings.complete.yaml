@@ -1,0 +1,31 @@
+tenant: Weather Demo Pack
+env_passthrough:
+- OTEL_EXPORTER_OTLP_ENDPOINT
+- OTEL_RESOURCE_ATTRIBUTES
+- RUST_LOG
+- WEATHER_CITY
+network_allow:
+- https://api.weather.example.com
+secrets_required:
+- WEATHER_API_KEY
+flows:
+- name: weather_flow
+  urls:
+  - https://api.weather.example.com
+  secrets:
+  - WEATHER_API_KEY
+  env:
+  - WEATHER_CITY
+  - WEATHER_CITY
+  mcp_components:
+  - weather.tools
+mcp_servers:
+- name: weather-tools
+  transport: https
+  endpoint: https://mcp.weather.example.com
+  caps:
+  - forecast
+- name: weather.tools
+  transport: websocket
+  endpoint: ws://localhost:9000
+  caps: []

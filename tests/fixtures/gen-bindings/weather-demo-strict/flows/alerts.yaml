@@ -1,0 +1,7 @@
+name: alerts_flow
+steps:
+  - build_alert:
+      payload:
+        region: "{{ env.ALERTS_REGION }}"
+        secret: "{{ secrets.ALERTS_TOKEN }}"
+        endpoint: "https://alerts.weather.example.com/send"

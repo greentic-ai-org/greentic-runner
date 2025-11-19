@@ -1,0 +1,16 @@
+network:
+  allow:
+    - https://api.weather.example.com
+secrets:
+  required:
+    - WEATHER_API_KEY
+env:
+  passthrough:
+    - WEATHER_CITY
+mcp:
+  servers:
+    - name: weather-tools
+      transport: https
+      endpoint: https://mcp.weather.example.com
+      caps:
+        - forecast

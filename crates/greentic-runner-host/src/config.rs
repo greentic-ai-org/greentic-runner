@@ -10,6 +10,7 @@ use greentic_mcp::{ExecConfig, RuntimePolicy, ToolStore, VerifyPolicy};
 use greentic_oauth_host::OAuthBrokerConfig;
 use serde::Deserialize;
 use serde_yaml_bw as serde_yaml;
+use std::env;
 
 #[derive(Debug, Clone)]
 pub struct HostConfig {

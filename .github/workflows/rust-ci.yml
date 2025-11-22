@@ -15,6 +15,8 @@ jobs:
         with:
           components: clippy, rustfmt
           targets: wasm32-wasip2
+      - name: Install wasm32-wasip2 target
+        run: rustup target add wasm32-wasip2 --toolchain nightly
       - uses: Swatinem/rust-cache@v2
       - name: Run local_check
         run: |

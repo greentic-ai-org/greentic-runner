@@ -25,6 +25,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: clippy, rustfmt
+          targets: wasm32-wasip2
+      - name: Install wasm32-wasip2 target
+        run: rustup target add wasm32-wasip2 --toolchain nightly
       - uses: Swatinem/rust-cache@v2
       - name: Run local_check
         run: |
@@ -43,6 +48,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: clippy, rustfmt
+          targets: wasm32-wasip2
+      - name: Install wasm32-wasip2 target
+        run: rustup target add wasm32-wasip2 --toolchain nightly
       - name: Generate bindings (complete)
         run: |
           set -o pipefail
@@ -70,6 +80,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: clippy, rustfmt
+          targets: wasm32-wasip2
+      - name: Install wasm32-wasip2 target
+        run: rustup target add wasm32-wasip2 --toolchain nightly
       - uses: Swatinem/rust-cache@v2
       - name: Publish changed crates
         uses: katyo/publish-crates@v2

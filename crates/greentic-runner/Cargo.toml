@@ -16,9 +16,15 @@ anyhow.workspace = true
 clap.workspace = true
 greentic-runner-host = { workspace = true, features = ["mcp"] }
 greentic-runner-desktop = { workspace = true }
+greentic-interfaces.workspace = true
+greentic-interfaces-host.workspace = true
+greentic-interfaces-wasmtime.workspace = true
 greentic-types.workspace = true
 humantime.workspace = true
 runner-core = { workspace = true }
+chrono.workspace = true
+wasmtime.workspace = true
+wasmtime-wasi.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 tracing.workspace = true
@@ -26,6 +32,7 @@ serde_yaml_bw.workspace = true
 serde.workspace = true
 wasmparser.workspace = true
 url.workspace = true
+indexmap.workspace = true
 
 [lib]
 name = "greentic_runner"

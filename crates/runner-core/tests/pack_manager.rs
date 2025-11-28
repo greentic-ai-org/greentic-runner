@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::thread;
 
 use anyhow::{Result, anyhow};
-use greentic_pack::builder::{FlowBundle, PackBuilder, PackMeta};
+use greentic_pack::builder::{FlowBundle, PACK_VERSION, PackBuilder, PackMeta};
 use runner_core::packs::PackDigest;
 use runner_core::{Index, IndexLocation, PackConfig, PackManager, PackSource};
 use semver::Version;
@@ -14,6 +14,7 @@ use tiny_http::{Response, Server};
 
 fn sample_meta() -> PackMeta {
     PackMeta {
+        pack_version: PACK_VERSION,
         pack_id: "ai.greentic.runner.tests".into(),
         version: Version::parse("0.1.0").unwrap(),
         name: "Test Runner".into(),
@@ -21,9 +22,16 @@ fn sample_meta() -> PackMeta {
         description: None,
         authors: vec!["Greentic".into()],
         license: None,
+        homepage: None,
+        support: None,
+        vendor: None,
         imports: vec![],
         entry_flows: vec!["qa".into()],
         created_at_utc: "2025-01-01T00:00:00Z".into(),
+        events: None,
+        repo: None,
+        messaging: None,
+        interfaces: Vec::new(),
         annotations: serde_json::Map::new(),
     }
 }

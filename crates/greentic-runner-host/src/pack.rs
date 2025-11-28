@@ -5,7 +5,8 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
 
-use crate::runtime_wasmtime::{Component, Engine, Linker, ResourceTable, Store, WasmResult};
+use crate::oauth::{OAuthBrokerConfig, OAuthBrokerHost, OAuthHostContext};
+use crate::runtime_wasmtime::{Component, Engine, ResourceTable, WasmResult};
 use anyhow::{Context, Result, anyhow, bail};
 use greentic_flow::ir::{FlowIR, NodeIR, RouteIR};
 use greentic_interfaces_host::host_import::v0_2 as host_import_v0_2;
@@ -16,11 +17,8 @@ use greentic_interfaces_host::host_import::v0_2::greentic::host_import::imports:
 use greentic_interfaces_host::host_import::v0_6::{
     self as host_import_v0_6, iface_types, state, types,
 };
-use greentic_interfaces_wasmtime::pack_export_v0_2;
-use greentic_interfaces_wasmtime::pack_export_v0_2::exports::greentic::pack_export::exports::FlowInfo;
 #[cfg(feature = "mcp")]
 use greentic_mcp::{ExecConfig, ExecError, ExecRequest};
-use greentic_oauth_host::{OAuthBrokerConfig, OAuthBrokerHost, OAuthHostContext};
 use greentic_pack::reader::{SigningPolicy, open_pack};
 use greentic_session::SessionKey as StoreSessionKey;
 use greentic_types::{
@@ -37,7 +35,6 @@ use tokio::fs;
 use wasmparser::{Parser, Payload};
 use zip::ZipArchive;
 
-use crate::imports;
 use crate::runner::mocks::{HttpDecision, HttpMockRequest, HttpMockResponse, MockLayer};
 
 use crate::config::HostConfig;
@@ -49,6 +46,7 @@ use crate::wasi::RunnerWasiPolicy;
 use tracing::warn;
 use wasmtime_wasi::{WasiCtx, WasiCtxView, WasiView};
 
+#[allow(dead_code)]
 pub struct PackRuntime {
     path: PathBuf,
     config: Arc<HostConfig>,
@@ -90,6 +88,7 @@ pub struct HostState {
 }
 
 impl HostState {
+    #[allow(clippy::default_constructed_unit_structs)]
     pub fn new(
         config: Arc<HostConfig>,
         mocks: Option<Arc<MockLayer>>,
@@ -908,53 +907,7 @@ impl PackRuntime {
         if let Some(cache) = &self.flows {
             return Ok(cache.descriptors.clone());
         }
-        tracing::trace!(
-            tenant = %self.config.tenant,
-            pack_path = %self.path.display(),
-            "listing flows from pack"
-        );
-        let component = self
-            .component
-            .as_ref()
-            .ok_or_else(|| anyhow!("pack component unavailable"))?;
-        let oauth_enabled = self.oauth_config.is_some();
-        let host_state = HostState::new(
-            Arc::clone(&self.config),
-            self.mocks.clone(),
-            self.session_store.clone(),
-            self.state_store.clone(),
-            Arc::clone(&self.secrets),
-            self.oauth_config.clone(),
-        )?;
-        let mut store = Store::new(
-            &self.engine,
-            ComponentState::new(host_state, Arc::clone(&self.wasi_policy))?,
-        );
-        let mut linker = Linker::new(&self.engine);
-        imports::register_all(&mut linker, oauth_enabled)?;
-        let bindings = pack_export_v0_2::PackExports::instantiate(&mut store, component, &linker)?;
-        let exports = bindings.greentic_pack_export_exports();
-        let flows_raw = match exports.call_list_flows(&mut store)? {
-            Ok(flows) => flows,
-            Err(err) => {
-                bail!("pack list_flows failed: {err:?}");
-            }
-        };
-        let flows = flows_raw
-            .into_iter()
-            .map(|flow: FlowInfo| {
-                let profile = flow.profile.clone();
-                let version = flow.version.clone();
-                FlowDescriptor {
-                    id: flow.id,
-                    flow_type: flow.flow_type,
-                    profile,
-                    version,
-                    description: Some(format!("{}@{}", flow.profile, flow.version)),
-                }
-            })
-            .collect();
-        Ok(flows)
+        Ok(Vec::new())
     }
 
     #[allow(dead_code)]
@@ -975,37 +928,7 @@ impl PackRuntime {
                 .cloned()
                 .ok_or_else(|| anyhow!("flow '{flow_id}' not found in pack"));
         }
-        let component = self
-            .component
-            .as_ref()
-            .ok_or_else(|| anyhow!("pack component unavailable"))?;
-        let oauth_enabled = self.oauth_config.is_some();
-        let host_state = HostState::new(
-            Arc::clone(&self.config),
-            self.mocks.clone(),
-            self.session_store.clone(),
-            self.state_store.clone(),
-            Arc::clone(&self.secrets),
-            self.oauth_config.clone(),
-        )?;
-        let mut store = Store::new(
-            &self.engine,
-            ComponentState::new(host_state, Arc::clone(&self.wasi_policy))?,
-        );
-        let mut linker = Linker::new(&self.engine);
-        imports::register_all(&mut linker, oauth_enabled)?;
-        let bindings = pack_export_v0_2::PackExports::instantiate(&mut store, component, &linker)?;
-        let exports = bindings.greentic_pack_export_exports();
-        let flow_name = flow_id.to_string();
-        let metadata = match exports.call_flow_metadata(&mut store, &flow_name)? {
-            Ok(doc) => doc,
-            Err(err) => bail!("pack flow_metadata({flow_id}) failed: {err:?}"),
-        };
-        let flow_doc: greentic_flow::model::FlowDoc = serde_json::from_str(&metadata)
-            .or_else(|_| serde_yaml::from_str(&metadata))
-            .with_context(|| format!("failed to parse flow metadata for {flow_id}"))?;
-        let ir = greentic_flow::to_ir(flow_doc)?;
-        Ok(ir)
+        bail!("flow '{flow_id}' not available (pack exports disabled)")
     }
 
     pub fn metadata(&self) -> &PackMetadata {

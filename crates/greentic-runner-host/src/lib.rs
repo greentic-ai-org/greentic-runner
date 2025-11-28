@@ -35,6 +35,7 @@ pub mod watcher;
 
 mod activity;
 mod host;
+pub mod oauth;
 
 pub use activity::{Activity, ActivityKind};
 pub use config::HostConfig;

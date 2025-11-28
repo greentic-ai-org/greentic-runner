@@ -4,7 +4,7 @@ use std::io::Write;
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use greentic_pack::builder::{FlowBundle, PackBuilder, PackMeta};
+use greentic_pack::builder::{FlowBundle, PACK_VERSION, PackBuilder, PackMeta};
 use runner_core::{Index, PackConfig, PackManager};
 use semver::Version;
 use serde_json::json;
@@ -74,6 +74,7 @@ fn ensure_example_pack() -> Result<()> {
 
 fn example_meta() -> PackMeta {
     PackMeta {
+        pack_version: PACK_VERSION,
         pack_id: "ai.greentic.runner.example".into(),
         version: Version::parse("0.1.0").unwrap(),
         name: "Runner Example".into(),
@@ -81,9 +82,16 @@ fn example_meta() -> PackMeta {
         description: Some("Minimal pack for fs resolver showcase".into()),
         authors: vec!["Greentic".into()],
         license: None,
+        homepage: None,
+        support: None,
+        vendor: None,
         imports: vec![],
         entry_flows: vec!["qa".into()],
         created_at_utc: "2025-01-01T00:00:00Z".into(),
+        events: None,
+        repo: None,
+        messaging: None,
+        interfaces: Vec::new(),
         annotations: serde_json::Map::new(),
     }
 }

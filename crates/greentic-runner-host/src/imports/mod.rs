@@ -1,5 +1,5 @@
+use crate::oauth::add_oauth_broker_to_linker;
 use anyhow::Result;
-use greentic_oauth_host::add_oauth_broker_to_linker;
 use wasmtime_wasi::p2;
 
 use crate::runtime_wasmtime::Linker;

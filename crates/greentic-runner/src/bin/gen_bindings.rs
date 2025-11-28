@@ -3,6 +3,7 @@
 use anyhow::{Context, Result, bail};
 use clap::Parser;
 use greentic_runner::gen_bindings::{self, GeneratorOptions, component};
+use serde_yaml_bw as serde_yaml;
 use std::{fs, path::PathBuf};
 
 #[derive(Debug, Parser)]

@@ -17,7 +17,7 @@ verify = []
 mcp = ["dep:greentic_mcp"]
 
 [dependencies]
-async-trait = "0.1"
+async-trait.workspace = true
 anyhow.workspace = true
 arc-swap.workspace = true
 axum.workspace = true
@@ -54,11 +54,11 @@ wasmparser.workspace = true
 zip.workspace = true
 bytes.workspace = true
 futures.workspace = true
-hmac = "0.12"
-sha1 = "0.10"
+hmac.workspace = true
+sha1.workspace = true
 
 # External stack components
 greentic_mcp = { workspace = true, optional = true }
-wasmtime = { version = "38", default-features = false, features = ["component-model", "cranelift", "runtime", "std"] }
-wasmtime-wasi = { version = "38", default-features = false, features = ["p2"] }
-greentic-telemetry = { version = "0.3", optional = true }
+wasmtime.workspace = true
+wasmtime-wasi.workspace = true
+greentic-telemetry = { workspace = true, optional = true }

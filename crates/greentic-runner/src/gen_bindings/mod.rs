@@ -1,6 +1,6 @@
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
-use serde_yaml::Value;
+use serde_yaml_bw::{self as serde_yaml, Value};
 use std::{collections::HashSet, fs, path::Path};
 use url::Url;
 
@@ -162,7 +162,7 @@ fn collect_flow_bindings(doc: &Value) -> FlowBindings {
 
 fn scan_value_for_placeholders(value: &Value, bindings: &mut FlowBindings) {
     match value {
-        Value::String(s) => {
+        Value::String(s, _) => {
             bindings.secrets.extend(extract_placeholders(s, "secrets."));
             bindings.env.extend(extract_placeholders(s, "env."));
             if let Some(origin) = extract_origin(s) {
@@ -186,10 +186,10 @@ fn scan_value_for_placeholders(value: &Value, bindings: &mut FlowBindings) {
 fn collect_mcp_components(value: &Value, bindings: &mut FlowBindings) {
     match value {
         Value::Mapping(map) => {
-            let exec_key = Value::String("mcp.exec".into());
-            let component_key = Value::String("component".into());
+            let exec_key = Value::String("mcp.exec".into(), None);
+            let component_key = Value::String("component".into(), None);
             if let Some(Value::Mapping(exec_map)) = map.get(&exec_key)
-                && let Some(Value::String(component)) = exec_map.get(&component_key)
+                && let Some(Value::String(component, _)) = exec_map.get(&component_key)
             {
                 bindings.mcp_components.push(component.clone());
             }
@@ -358,13 +358,13 @@ fn find_meta_bindings(meta: &Value) -> FlowBindings {
 
 fn find_bindings_value(meta: &Value) -> Option<&Value> {
     if let Value::Mapping(map) = meta {
-        let bindings_key = Value::String("bindings".into());
+        let bindings_key = Value::String("bindings".into(), None);
         if let Some(bindings) = map.get(&bindings_key) {
             return Some(bindings);
         }
-        let meta_key = Value::String("meta".into());
+        let meta_key = Value::String("meta".into(), None);
         if let Some(Value::Mapping(inner_map)) = map.get(&meta_key) {
-            let inner_bindings_key = Value::String("bindings".into());
+            let inner_bindings_key = Value::String("bindings".into(), None);
             return inner_map.get(&inner_bindings_key);
         }
     }
@@ -373,7 +373,7 @@ fn find_bindings_value(meta: &Value) -> Option<&Value> {
 
 fn extract_string_list(bindings: &Value, key: &str) -> Vec<String> {
     if let Value::Mapping(map) = bindings {
-        let key_value = Value::String(key.into());
+        let key_value = Value::String(key.into(), None);
         if let Some(value) = map.get(&key_value) {
             return value_to_list(value);
         }
@@ -387,7 +387,7 @@ fn value_to_list(value: &Value) -> Vec<String> {
             .iter()
             .filter_map(|v| v.as_str().map(|s| s.to_string()))
             .collect(),
-        Value::String(s) => vec![s.clone()],
+        Value::String(s, _) => vec![s.clone()],
         _ => Vec::new(),
     }
 }

@@ -21,17 +21,23 @@ anyhow.workspace = true
 clap.workspace = true
 greentic-runner-host.workspace = true
 greentic-runner-desktop.workspace = true
+greentic-interfaces.workspace = true
+greentic-interfaces-host.workspace = true
+greentic-interfaces-wasmtime.workspace = true
 greentic-types.workspace = true
 humantime.workspace = true
 runner-core.workspace = true
+chrono.workspace = true
+wasmtime.workspace = true
+wasmtime-wasi.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 indexmap.workspace = true
-serde_yaml = "0.9"
-serde = { version = "1.0", features = ["derive"] }
+serde_yaml_bw.workspace = true
+serde.workspace = true
 wasmparser.workspace = true
-url = "2"
+url.workspace = true
 zip.workspace = true
 thiserror.workspace = true
 tracing-subscriber.workspace = true
@@ -54,5 +60,6 @@ name = "greentic-runtime"
 path = "src/bin/runtime_cli.rs"
 
 [dev-dependencies]
-tempfile = "3"
-semver = "1"
+tempfile.workspace = true
+semver.workspace = true
+wit-component.workspace = true

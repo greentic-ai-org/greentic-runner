@@ -22,6 +22,16 @@ curl -X POST http://localhost:8080/messaging/telegram/webhook \
 
 The host loads packs declared in `PACK_INDEX_URL`, verifies signatures/digests (via `PACK_PUBLIC_KEY` / `PACK_VERIFY_STRICT`), and exposes the built-in adapters. Every ingress payload (Telegram/WebChat/Slack/Webex/WhatsApp/webhook) is normalized into the canonical schema with deterministic session keys so pause/resume + dedupe work the same way across providers.
 
+## Worker integration
+
+`greentic-runner` exposes helpers in `greentic_runner::worker_integration` to execute generic workers via the `greentic:worker@1.0.0` world. Call `execute_worker` with a `TenantCtx` and `greentic-types` worker envelopes (or use `execute_worker_payload` to fill version/timestamp) and the runner will invoke the component with the canonical ABI. This surface is domain-agnostic—higher-level services (repo, messaging, etc.) can rely on it without leaking domain types.
+
+To run the worker integration test locally you’ll need the `wasm32-wasip2` target:
+
+```bash
+rustup target add wasm32-wasip2
+```
+
 ## Pack index schema
 
 Pack resolution is driven by a JSON index (see `examples/index.json`). Each tenant entry supplies a `main_pack` plus optional ordered `overlays`:

@@ -8,6 +8,7 @@ use anyhow::{Context, Result, bail};
 use greentic_types::Flow;
 use greentic_types::component::ComponentManifest;
 use greentic_types::pack_manifest::{PackComponentRef, PackManifest};
+use serde_yaml_bw as serde_yaml;
 use zip::ZipArchive;
 
 /// In-memory representation of a parsed pack archive/directory.

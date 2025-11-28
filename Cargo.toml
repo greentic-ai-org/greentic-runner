@@ -15,7 +15,7 @@ resolver = "2"
 [workspace.package]
 edition = "2024"
 license = "MIT"
-version = "0.4.0"
+version = "0.4.2"
 
 [workspace.dependencies]
 arc-swap = "1.7"
@@ -29,6 +29,8 @@ ed25519-dalek = { version = "2", features = ["pkcs8"] }
 futures = "0.3"
 greentic-flow = "0.4"
 greentic-interfaces = "0.4"
+greentic-interfaces-host = "0.4"
+greentic-interfaces-wasmtime = "0.4"
 greentic_mcp = { package = "mcp-exec", version = "0.4" }
 greentic-types = { version = "0.4", features = ["telemetry-autoinit"] }
 greentic-pack = { version = "0.4" }
@@ -47,7 +49,7 @@ rand = "0.9"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "blocking"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1"
-serde_yaml_bw = "2.5"
+serde_yaml_bw = "2"
 serde_cbor = "0.11"
 sha2 = "0.10"
 thiserror = "2.0"
@@ -56,7 +58,9 @@ tokio = { version = "1.48", features = ["rt-multi-thread", "macros", "rt", "sign
 tokio-util = "0.7"
 tower = "0.5"
 tracing = "0.1"
-wasmparser = "0.241"
+wasmparser = "0.242"
+wasmtime = { version = "39", default-features = false, features = ["component-model", "cranelift", "runtime", "std"] }
+wasmtime-wasi = { version = "39", default-features = false, features = ["p2"] }
 cron = "0.15"
 handlebars = "6"
 uuid = { version = "1", features = ["v4"] }
@@ -65,3 +69,12 @@ zip = { version = "6", default-features = false, features = ["deflate"] }
 indexmap = "2"
 bytes = "1"
 tracing-subscriber = "0.3"
+semver = "1"
+tempfile = "3"
+blake3 = "1"
+tiny_http = "0.12"
+hmac = "0.12"
+sha1 = "0.10"
+greentic-telemetry = "0.4"
+serial_test = "3"
+wit-component = "0.242"

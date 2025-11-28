@@ -1,0 +1,12 @@
+[package]
+name = "worker-component"
+version = "0.0.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib"]
+
+[workspace]
+
+[dependencies]
+wit-bindgen = "0.47"

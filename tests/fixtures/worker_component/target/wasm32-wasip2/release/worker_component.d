@@ -1,0 +1,1 @@
+/projects/ai/greentic-ng/greentic-runner/tests/fixtures/worker_component/target/wasm32-wasip2/release/worker_component.wasm: /projects/ai/greentic-ng/greentic-runner/tests/fixtures/worker_component/src/lib.rs /projects/ai/greentic-ng/greentic-runner/tests/fixtures/worker_component/wit/worker.wit

@@ -1,0 +1,63 @@
+package greentic:worker@1.0.0;
+
+interface worker-api {
+  enum cloud { aws, gcp, azure, hetzner, local, other }
+  enum platform { k8s, nomad, systemd, cfworkers, lambda, baremetal, other }
+
+  record deployment-ctx {
+    cloud: cloud,
+    region: option<string>,
+    platform: platform,
+    runtime: option<string>,
+  }
+
+  record tenant-ctx {
+    tenant: string,
+    team: option<string>,
+    user: option<string>,
+    deployment: deployment-ctx,
+    trace-id: option<string>,
+    session-id: option<string>,
+    flow-id: option<string>,
+    node-id: option<string>,
+    provider-id: option<string>,
+  }
+
+  record worker-request {
+    version: string,
+    tenant: tenant-ctx,
+    worker-id: string,
+    correlation-id: option<string>,
+    session-id: option<string>,
+    thread-id: option<string>,
+    payload-json: string,
+    timestamp-utc: string,
+  }
+
+  record worker-message {
+    kind: string,
+    payload-json: string,
+  }
+
+  record worker-response {
+    version: string,
+    tenant: tenant-ctx,
+    worker-id: string,
+    correlation-id: option<string>,
+    session-id: option<string>,
+    thread-id: option<string>,
+    messages: list<worker-message>,
+    timestamp-utc: string,
+  }
+
+  record worker-error {
+    code: string,
+    message: string,
+  }
+
+  exec: func(req: worker-request) -> result<worker-response, worker-error>;
+}
+
+world worker {
+  export worker-api;
+}

@@ -10,5 +10,8 @@ pub mod desktop {
     pub use greentic_runner_desktop::*;
 }
 
+pub mod bridge_integration;
+pub mod events_integration;
 pub mod gen_bindings;
 pub mod runtime;
+pub mod worker_integration;

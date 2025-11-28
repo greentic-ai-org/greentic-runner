@@ -10,17 +10,17 @@ readme = "README.md"
 
 [dependencies]
 anyhow.workspace = true
-base64 = "0.22"
-blake3 = "1"
+base64.workspace = true
+blake3.workspace = true
 ed25519-dalek.workspace = true
 greentic-pack.workspace = true
 reqwest.workspace = true
-semver = "1"
+semver.workspace = true
 serde = { workspace = true }
 serde_json.workspace = true
 sha2.workspace = true
-tempfile = "3"
+tempfile.workspace = true
 url.workspace = true
 
 [dev-dependencies]
-tiny_http = "0.12"
+tiny_http.workspace = true

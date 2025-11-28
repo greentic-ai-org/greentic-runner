@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 
 use greentic_runner::gen_bindings::{self, GeneratorOptions, component::ComponentFeatures};
 use greentic_types::bindings::hints::BindingsHints;
+use serde_yaml_bw as serde_yaml;
 
 fn fixture(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))

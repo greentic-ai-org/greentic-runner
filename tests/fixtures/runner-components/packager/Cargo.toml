@@ -14,4 +14,4 @@ serde = { version = "1", features = ["derive"] }
 serde_yaml_bw = "2.5"
 serde_json = "1"
 time = { version = "0.3", features = ["formatting"] }
-zip = "0.6"
+zip = { version = "6", default-features = false, features = ["deflate"] }

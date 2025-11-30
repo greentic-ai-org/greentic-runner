@@ -14,7 +14,7 @@ categories = ["wasm", "command-line-utilities", "network-programming"]
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
-greentic-runner-host = { workspace = true, features = ["mcp"] }
+greentic-runner-host = { workspace = true }
 greentic-runner-desktop = { workspace = true }
 greentic-interfaces.workspace = true
 greentic-interfaces-host.workspace = true

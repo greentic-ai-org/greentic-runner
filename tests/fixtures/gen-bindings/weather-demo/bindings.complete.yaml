@@ -17,15 +17,3 @@ flows:
   env:
   - WEATHER_CITY
   - WEATHER_CITY
-  mcp_components:
-  - weather.tools
-mcp_servers:
-- name: weather-tools
-  transport: https
-  endpoint: https://mcp.weather.example.com
-  caps:
-  - forecast
-- name: weather.tools
-  transport: websocket
-  endpoint: ws://localhost:9000
-  caps: []

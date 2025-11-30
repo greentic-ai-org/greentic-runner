@@ -1,0 +1,2 @@
+cargo:rerun-if-changed=build.rs
+cargo:rustc-env=DEBUG_OUTPUT_DIR=/Users/maarten/Documents/GitHub/agentic/greentic-runner/tests/fixtures/runner-components/target/debug/build/wasmtime-internal-component-macro-e6dd6b964a33dfca/out

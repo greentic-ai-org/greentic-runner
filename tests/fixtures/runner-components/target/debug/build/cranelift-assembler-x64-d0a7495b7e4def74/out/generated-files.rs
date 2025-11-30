@@ -1,0 +1,3 @@
+vec![
+  "/Users/maarten/Documents/GitHub/agentic/greentic-runner/tests/fixtures/runner-components/target/debug/build/cranelift-assembler-x64-d0a7495b7e4def74/out/assembler.rs".into(),
+]

@@ -1,0 +1,52 @@
+// SPDX-License-Identifier: MIT
+
+package greentic:oauth-broker@1.0.0;
+
+/// Generic OAuth broker interface.
+/// Semantics are provider-agnostic; providers are implemented host-side.
+interface broker-v1 {
+  /// Build a consent/authorization URL for a given OAuth provider and subject.
+  ///
+  /// - provider-id: logical provider (e.g. "msgraph", "google", "github").
+  /// - subject: logical subject id (tenant/user/account).
+  /// - scopes: requested scopes, e.g. ["openid", "profile"].
+  /// - redirect-path: path-only (e.g. "/oauth/callback/msgraph"); host decides base URL.
+  /// - extra-json: optional JSON string with provider-specific params.
+  ///
+  /// Returns a URL string. Hosts may return empty string on error.
+  get-consent-url: func(
+    provider-id: string,
+    subject: string,
+    scopes: list<string>,
+    redirect-path: string,
+    extra-json: string,
+  ) -> string;
+
+  /// Exchange an authorization code for a token set.
+  ///
+  /// Returns a JSON string representing the token set, e.g.:
+  /// { "access_token": "...", "refresh_token": "...", "expires_at": 1234567890,
+  ///   "token_type": "Bearer", "extra": { ... } }
+  /// Hosts define the exact JSON shape.
+  exchange-code: func(
+    provider-id: string,
+    subject: string,
+    code: string,
+    redirect-path: string,
+  ) -> string;
+
+  /// Retrieve a stored token set for provider/subject/scopes.
+  ///
+  /// Hosts may refresh tokens if expired and a refresh token is available.
+  /// Returns JSON for TokenSet, or empty string if none.
+  get-token: func(
+    provider-id: string,
+    subject: string,
+    scopes: list<string>,
+  ) -> string;
+}
+
+/// World used by components to call the OAuth broker host service.
+world broker {
+  export broker-v1;
+}

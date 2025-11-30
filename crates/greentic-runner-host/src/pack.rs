@@ -5,8 +5,13 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
 
+use crate::component_api::component::greentic::component::control::Host as ComponentControlHost;
+use crate::component_api::{
+    ComponentPre, control, node::ExecCtx as ComponentExecCtx, node::InvokeResult, node::NodeError,
+};
+use crate::imports::register_all;
 use crate::oauth::{OAuthBrokerConfig, OAuthBrokerHost, OAuthHostContext};
-use crate::runtime_wasmtime::{Component, Engine, ResourceTable, WasmResult};
+use crate::runtime_wasmtime::{Component, Engine, Linker, ResourceTable, WasmResult};
 use anyhow::{Context, Result, anyhow, bail};
 use greentic_flow::ir::{FlowIR, NodeIR, RouteIR};
 use greentic_interfaces_host::host_import::v0_2 as host_import_v0_2;
@@ -17,8 +22,6 @@ use greentic_interfaces_host::host_import::v0_2::greentic::host_import::imports:
 use greentic_interfaces_host::host_import::v0_6::{
     self as host_import_v0_6, iface_types, state, types,
 };
-#[cfg(feature = "mcp")]
-use greentic_mcp::{ExecConfig, ExecError, ExecRequest};
 use greentic_pack::reader::{SigningPolicy, open_pack};
 use greentic_session::SessionKey as StoreSessionKey;
 use greentic_types::{
@@ -26,6 +29,8 @@ use greentic_types::{
     TeamId, TenantCtx as TypesTenantCtx, TenantId, UserId,
 };
 use indexmap::IndexMap;
+use once_cell::sync::Lazy;
+use parking_lot::Mutex;
 use reqwest::blocking::Client as BlockingClient;
 use serde::{Deserialize, Serialize};
 use serde_cbor;
@@ -33,6 +38,7 @@ use serde_json::{self, Value};
 use serde_yaml_bw as serde_yaml;
 use tokio::fs;
 use wasmparser::{Parser, Payload};
+use wasmtime::StoreContextMut;
 use zip::ZipArchive;
 
 use crate::runner::mocks::{HttpDecision, HttpMockRequest, HttpMockResponse, MockLayer};
@@ -51,16 +57,35 @@ pub struct PackRuntime {
     path: PathBuf,
     config: Arc<HostConfig>,
     engine: Engine,
-    component: Option<Component>,
     metadata: PackMetadata,
+    manifest: Option<greentic_pack::builder::PackManifest>,
     mocks: Option<Arc<MockLayer>>,
     flows: Option<PackFlows>,
+    components: HashMap<String, PackComponent>,
+    http_client: Arc<BlockingClient>,
+    pre_cache: Mutex<HashMap<String, ComponentPre<ComponentState>>>,
     session_store: Option<DynSessionStore>,
     state_store: Option<DynStateStore>,
     wasi_policy: Arc<RunnerWasiPolicy>,
     secrets: DynSecretsManager,
     oauth_config: Option<OAuthBrokerConfig>,
 }
+
+struct PackComponent {
+    #[allow(dead_code)]
+    name: String,
+    #[allow(dead_code)]
+    version: String,
+    component: Component,
+}
+
+fn build_blocking_client() -> BlockingClient {
+    std::thread::spawn(|| BlockingClient::builder().build().expect("blocking client"))
+        .join()
+        .expect("client build thread panicked")
+}
+
+static HTTP_CLIENT: Lazy<Arc<BlockingClient>> = Lazy::new(|| Arc::new(build_blocking_client()));
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FlowDescriptor {
@@ -75,9 +100,7 @@ pub struct FlowDescriptor {
 
 pub struct HostState {
     config: Arc<HostConfig>,
-    http_client: BlockingClient,
-    #[cfg(feature = "mcp")]
-    exec_config: Option<ExecConfig>,
+    http_client: Arc<BlockingClient>,
     default_env: String,
     session_store: Option<DynSessionStore>,
     state_store: Option<DynStateStore>,
@@ -91,21 +114,17 @@ impl HostState {
     #[allow(clippy::default_constructed_unit_structs)]
     pub fn new(
         config: Arc<HostConfig>,
+        http_client: Arc<BlockingClient>,
         mocks: Option<Arc<MockLayer>>,
         session_store: Option<DynSessionStore>,
         state_store: Option<DynStateStore>,
         secrets: DynSecretsManager,
         oauth_config: Option<OAuthBrokerConfig>,
     ) -> Result<Self> {
-        let http_client = BlockingClient::builder().build()?;
-        #[cfg(feature = "mcp")]
-        let exec_config = config.mcp_exec_config().ok();
         let default_env = std::env::var("GREENTIC_ENV").unwrap_or_else(|_| "local".to_string());
         Ok(Self {
             config,
             http_client,
-            #[cfg(feature = "mcp")]
-            exec_config,
             default_env,
             session_store,
             state_store,
@@ -228,6 +247,36 @@ impl ComponentState {
     fn host_mut(&mut self) -> &mut HostState {
         &mut self.host
     }
+}
+
+impl control::Host for ComponentState {
+    fn should_cancel(&mut self) -> bool {
+        false
+    }
+
+    fn yield_now(&mut self) {
+        // no-op cooperative yield
+    }
+}
+
+fn add_component_control_to_linker(linker: &mut Linker<ComponentState>) -> wasmtime::Result<()> {
+    let mut inst = linker.instance("greentic:component/control@0.4.0")?;
+    inst.func_wrap(
+        "should-cancel",
+        |mut caller: StoreContextMut<'_, ComponentState>, (): ()| {
+            let host = caller.data_mut();
+            Ok((ComponentControlHost::should_cancel(host),))
+        },
+    )?;
+    inst.func_wrap(
+        "yield-now",
+        |mut caller: StoreContextMut<'_, ComponentState>, (): ()| {
+            let host = caller.data_mut();
+            ComponentControlHost::yield_now(host);
+            Ok(())
+        },
+    )?;
+    Ok(())
 }
 
 impl OAuthHostContext for ComponentState {
@@ -418,60 +467,9 @@ impl host_import_v0_6::HostImports for HostState {
         args_json: String,
         ctx: Option<types::TenantCtx>,
     ) -> WasmResult<Result<String, types::IfaceError>> {
-        #[cfg(not(feature = "mcp"))]
-        {
-            let _ = (component, action, args_json, ctx);
-            tracing::warn!("mcp.exec requested but crate built without `mcp` feature");
-            return Ok(Err(types::IfaceError::Unavailable));
-        }
-        #[cfg(feature = "mcp")]
-        {
-            let exec_config = match &self.exec_config {
-                Some(cfg) => cfg.clone(),
-                None => {
-                    tracing::warn!(component = %component, action = %action, "exec config unavailable for tool invoke");
-                    return Ok(Err(types::IfaceError::Unavailable));
-                }
-            };
-            let args: Value = match serde_json::from_str(&args_json) {
-                Ok(value) => value,
-                Err(err) => {
-                    tracing::warn!(error = %err, "invalid args for mcp.exec node");
-                    return Ok(Err(types::IfaceError::InvalidArg));
-                }
-            };
-            let tenant = match self.tenant_ctx_from_v6(ctx) {
-                Ok(ctx) => Some(ctx),
-                Err(err) => {
-                    tracing::warn!(error = %err, "failed to parse tenant context for mcp.exec");
-                    None
-                }
-            };
-            let request = ExecRequest {
-                component: component.clone(),
-                action: action.clone(),
-                args,
-                tenant,
-            };
-            match greentic_mcp::exec(request, &exec_config) {
-                Ok(value) => match serde_json::to_string(&value) {
-                    Ok(body) => Ok(Ok(body)),
-                    Err(err) => {
-                        tracing::error!(error = %err, "failed to serialise tool result");
-                        Ok(Err(types::IfaceError::Internal))
-                    }
-                },
-                Err(err) => {
-                    tracing::warn!(component = %component, action = %action, error = %err, "mcp exec failed");
-                    let iface_err = match err {
-                        ExecError::NotFound { .. } => types::IfaceError::NotFound,
-                        ExecError::Tool { .. } => types::IfaceError::Denied,
-                        _ => types::IfaceError::Unavailable,
-                    };
-                    Ok(Err(iface_err))
-                }
-            }
-        }
+        let _ = (component, action, args_json, ctx);
+        tracing::warn!("mcp.exec requested but MCP bridge is removed; returning unavailable");
+        Ok(Err(types::IfaceError::Unavailable))
     }
 
     fn state_get(
@@ -646,74 +644,9 @@ impl host_import_v0_2::HostImports for HostState {
         args_json: String,
         ctx: Option<LegacyTenantCtx>,
     ) -> WasmResult<Result<String, LegacyIfaceError>> {
-        #[cfg(not(feature = "mcp"))]
-        {
-            let _ = (tool, action, args_json, ctx);
-            tracing::warn!("tool invoke requested but crate built without `mcp` feature");
-            return Ok(Err(LegacyIfaceError::Unavailable));
-        }
-
-        #[cfg(feature = "mcp")]
-        {
-            let exec_config = match &self.exec_config {
-                Some(cfg) => cfg.clone(),
-                None => {
-                    tracing::warn!(%tool, %action, "exec config unavailable for tool invoke");
-                    return Ok(Err(LegacyIfaceError::Unavailable));
-                }
-            };
-
-            let args: Value = match serde_json::from_str(&args_json) {
-                Ok(value) => value,
-                Err(err) => {
-                    tracing::warn!(error = %err, "invalid args for tool invoke");
-                    return Ok(Err(LegacyIfaceError::InvalidArg));
-                }
-            };
-
-            let tenant = ctx.map(|ctx| map_legacy_tenant_ctx(ctx, &self.default_env));
-
-            let request = ExecRequest {
-                component: tool.clone(),
-                action: action.clone(),
-                args,
-                tenant,
-            };
-
-            if let Some(mock) = &self.mocks
-                && let Some(result) = mock.tool_short_circuit(&tool, &action)
-            {
-                return match result.and_then(|value| {
-                    serde_json::to_string(&value)
-                        .map_err(|err| anyhow!("failed to serialise mock tool output: {err}"))
-                }) {
-                    Ok(body) => Ok(Ok(body)),
-                    Err(err) => {
-                        tracing::error!(error = %err, "mock tool execution failed");
-                        Ok(Err(LegacyIfaceError::Internal))
-                    }
-                };
-            }
-
-            match greentic_mcp::exec(request, &exec_config) {
-                Ok(value) => match serde_json::to_string(&value) {
-                    Ok(body) => Ok(Ok(body)),
-                    Err(err) => {
-                        tracing::error!(error = %err, "failed to serialise tool result");
-                        Ok(Err(LegacyIfaceError::Internal))
-                    }
-                },
-                Err(err) => {
-                    tracing::warn!(%tool, %action, error = %err, "tool invoke failed");
-                    let iface_err = match err {
-                        ExecError::NotFound { .. } => LegacyIfaceError::NotFound,
-                        ExecError::Tool { .. } => LegacyIfaceError::Denied,
-                        _ => LegacyIfaceError::Unavailable,
-                    };
-                    Ok(Err(iface_err))
-                }
-            }
-        }
+        let _ = (tool, action, args_json, ctx);
+        tracing::warn!("tool invoke requested but MCP bridge is removed; returning unavailable");
+        Ok(Err(LegacyIfaceError::Unavailable))
     }
 
     fn http_fetch(
@@ -843,58 +776,74 @@ impl PackRuntime {
         let wasm_bytes = fs::read(path).await?;
         let mut metadata =
             PackMetadata::from_wasm(&wasm_bytes).unwrap_or_else(|| PackMetadata::fallback(path));
-        let mut flows = if let Some(archive_path) = archive_hint {
-            match PackFlows::from_archive(archive_path) {
-                Ok(cache) => {
-                    metadata = cache.metadata.clone();
-                    Some(cache)
+        let mut manifest = None;
+        let flows = if let Some(archive_path) = archive_hint {
+            match open_pack(archive_path, SigningPolicy::DevOk) {
+                Ok(pack) => {
+                    metadata = PackMetadata::from_manifest(&pack.manifest);
+                    manifest = Some(pack.manifest);
+                    None
                 }
                 Err(err) => {
-                    warn!(
-                        error = %err,
-                        pack = %archive_path.display(),
-                        "failed to parse pack flows via greentic-pack; falling back to component exports"
-                    );
-                    None
+                    warn!(error = ?err, pack = %archive_path.display(), "failed to parse pack manifest; falling back to legacy flow cache");
+                    match PackFlows::from_archive(archive_path) {
+                        Ok(cache) => {
+                            metadata = cache.metadata.clone();
+                            Some(cache)
+                        }
+                        Err(err) => {
+                            warn!(
+                                error = %err,
+                                pack = %archive_path.display(),
+                                "failed to parse pack flows via greentic-pack; falling back to component exports"
+                            );
+                            None
+                        }
+                    }
                 }
             }
         } else {
             None
         };
-        let component = match Component::from_file(&engine, path) {
-            Ok(component) => Some(component),
-            Err(err) => {
-                if let Some(archive_path) = archive_hint {
-                    if flows.is_none() {
-                        let archive_data =
-                            PackFlows::from_archive(archive_path).with_context(|| {
-                                format!(
-                                    "failed to build flow cache from {}",
-                                    archive_path.display()
-                                )
-                            })?;
-                        metadata = archive_data.metadata.clone();
-                        flows = Some(archive_data);
-                    }
-                    warn!(
-                        error = %err,
-                        pack = %archive_path.display(),
-                        "component load failed; continuing with cached flow metadata"
-                    );
-                    None
-                } else {
-                    return Err(err);
+        let components = if let Some(archive_path) = archive_hint {
+            match load_components_from_archive(&engine, archive_path) {
+                Ok(map) => map,
+                Err(err) => {
+                    warn!(error = %err, pack = %archive_path.display(), "failed to load components from archive");
+                    HashMap::new()
                 }
             }
+        } else if is_component {
+            let name = path
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_else(|| "component".to_string());
+            let component = Component::from_binary(&engine, &wasm_bytes)?;
+            let mut map = HashMap::new();
+            map.insert(
+                name.clone(),
+                PackComponent {
+                    name,
+                    version: metadata.version.clone(),
+                    component,
+                },
+            );
+            map
+        } else {
+            HashMap::new()
         };
+        let http_client = Arc::clone(&HTTP_CLIENT);
         Ok(Self {
             path: path.to_path_buf(),
             config,
             engine,
-            component,
             metadata,
+            manifest,
             mocks,
             flows,
+            components,
+            http_client,
+            pre_cache: Mutex::new(HashMap::new()),
             session_store,
             state_store,
             wasi_policy,
@@ -906,6 +855,20 @@ impl PackRuntime {
     pub async fn list_flows(&self) -> Result<Vec<FlowDescriptor>> {
         if let Some(cache) = &self.flows {
             return Ok(cache.descriptors.clone());
+        }
+        if let Some(manifest) = &self.manifest {
+            let descriptors = manifest
+                .flows
+                .iter()
+                .map(|flow| FlowDescriptor {
+                    id: flow.id.clone(),
+                    flow_type: flow.kind.clone(),
+                    profile: manifest.meta.name.clone(),
+                    version: manifest.meta.version.to_string(),
+                    description: Some(flow.kind.clone()),
+                })
+                .collect();
+            return Ok(descriptors);
         }
         Ok(Vec::new())
     }
@@ -920,6 +883,91 @@ impl PackRuntime {
         Ok(serde_json::json!({}))
     }
 
+    pub async fn invoke_component(
+        &self,
+        component_ref: &str,
+        ctx: ComponentExecCtx,
+        operation: &str,
+        _config_json: Option<String>,
+        input_json: String,
+    ) -> Result<Value> {
+        let pack_component = self
+            .components
+            .get(component_ref)
+            .with_context(|| format!("component '{component_ref}' not found in pack"))?;
+
+        let pre = if let Some(pre) = self.pre_cache.lock().get(component_ref).cloned() {
+            pre
+        } else {
+            let mut linker = Linker::new(&self.engine);
+            register_all(&mut linker, self.oauth_config.is_some())?;
+            add_component_control_to_linker(&mut linker)?;
+            let pre = ComponentPre::new(
+                linker
+                    .instantiate_pre(&pack_component.component)
+                    .map_err(|err| anyhow!(err))?,
+            )
+            .map_err(|err| anyhow!(err))?;
+            self.pre_cache
+                .lock()
+                .insert(component_ref.to_string(), pre.clone());
+            pre
+        };
+
+        let host_state = HostState::new(
+            Arc::clone(&self.config),
+            Arc::clone(&self.http_client),
+            self.mocks.clone(),
+            self.session_store.clone(),
+            self.state_store.clone(),
+            Arc::clone(&self.secrets),
+            self.oauth_config.clone(),
+        )?;
+        let store_state = ComponentState::new(host_state, Arc::clone(&self.wasi_policy))?;
+        let mut store = wasmtime::Store::new(&self.engine, store_state);
+        let bindings = pre
+            .instantiate_async(&mut store)
+            .await
+            .map_err(|err| anyhow!(err))?;
+        let node = bindings.greentic_component_node();
+
+        let result = node.call_invoke(&mut store, &ctx, operation, &input_json)?;
+
+        match result {
+            InvokeResult::Ok(body) => {
+                if body.is_empty() {
+                    return Ok(Value::Null);
+                }
+                serde_json::from_str(&body).or_else(|_| Ok(Value::String(body)))
+            }
+            InvokeResult::Err(NodeError {
+                code,
+                message,
+                retryable,
+                backoff_ms,
+                details,
+            }) => {
+                let mut obj = serde_json::Map::new();
+                obj.insert("ok".into(), Value::Bool(false));
+                let mut error = serde_json::Map::new();
+                error.insert("code".into(), Value::String(code));
+                error.insert("message".into(), Value::String(message));
+                error.insert("retryable".into(), Value::Bool(retryable));
+                if let Some(backoff) = backoff_ms {
+                    error.insert("backoff_ms".into(), Value::Number(backoff.into()));
+                }
+                if let Some(details) = details {
+                    error.insert(
+                        "details".into(),
+                        serde_json::from_str(&details).unwrap_or(Value::String(details)),
+                    );
+                }
+                obj.insert("error".into(), Value::Object(error));
+                Ok(Value::Object(obj))
+            }
+        }
+    }
+
     pub fn load_flow_ir(&self, flow_id: &str) -> Result<greentic_flow::ir::FlowIR> {
         if let Some(cache) = &self.flows {
             return cache
@@ -928,36 +976,94 @@ impl PackRuntime {
                 .cloned()
                 .ok_or_else(|| anyhow!("flow '{flow_id}' not found in pack"));
         }
+        if let Some(manifest) = &self.manifest {
+            let entry = manifest
+                .flows
+                .iter()
+                .find(|f| f.id == flow_id)
+                .ok_or_else(|| anyhow!("flow '{flow_id}' not found in manifest"))?;
+            let path = &self.path;
+            let mut archive = ZipArchive::new(File::open(path)?)?;
+            match load_flow_doc(&mut archive, entry).and_then(|doc| {
+                greentic_flow::to_ir(doc.clone())
+                    .with_context(|| format!("failed to build IR for flow {}", doc.id))
+            }) {
+                Ok(ir) => return Ok(ir),
+                Err(err) => {
+                    warn!(
+                        error = %err,
+                        flow_id = flow_id,
+                        "failed to parse flow from archive; falling back to stub IR"
+                    );
+                    return Ok(build_stub_flow_ir(&entry.id, &entry.kind));
+                }
+            }
+        }
         bail!("flow '{flow_id}' not available (pack exports disabled)")
     }
 
     pub fn metadata(&self) -> &PackMetadata {
         &self.metadata
     }
-}
 
-#[cfg(feature = "mcp")]
-fn map_legacy_tenant_ctx(ctx: LegacyTenantCtx, default_env: &str) -> TypesTenantCtx {
-    let env = ctx
-        .deployment
-        .runtime
-        .unwrap_or_else(|| default_env.to_string());
+    pub fn for_component_test(
+        components: Vec<(String, PathBuf)>,
+        flows: HashMap<String, FlowIR>,
+        config: Arc<HostConfig>,
+    ) -> Result<Self> {
+        let engine = Engine::default();
+        let mut component_map = HashMap::new();
+        for (name, path) in components {
+            if !path.exists() {
+                bail!("component artifact missing: {}", path.display());
+            }
+            let wasm_bytes = std::fs::read(&path)?;
+            let component = Component::from_binary(&engine, &wasm_bytes)
+                .with_context(|| format!("failed to compile component {}", path.display()))?;
+            component_map.insert(
+                name.clone(),
+                PackComponent {
+                    name,
+                    version: "0.0.0".into(),
+                    component,
+                },
+            );
+        }
 
-    let env_id = EnvId::from_str(env.as_str()).expect("invalid env id");
-    let tenant_id = TenantId::from_str(ctx.tenant.as_str()).expect("invalid tenant id");
-    let mut tenant_ctx = TypesTenantCtx::new(env_id, tenant_id);
-    tenant_ctx = tenant_ctx.with_team(
-        ctx.team
-            .as_ref()
-            .and_then(|team| TeamId::from_str(team.as_str()).ok()),
-    );
-    tenant_ctx = tenant_ctx.with_user(
-        ctx.user
-            .as_ref()
-            .and_then(|user| UserId::from_str(user.as_str()).ok()),
-    );
-    tenant_ctx.trace_id = ctx.trace_id;
-    tenant_ctx
+        let descriptors = flows
+            .iter()
+            .map(|(id, ir)| FlowDescriptor {
+                id: id.clone(),
+                flow_type: ir.flow_type.clone(),
+                profile: "test".into(),
+                version: "0.0.0".into(),
+                description: None,
+            })
+            .collect::<Vec<_>>();
+        let flows_cache = PackFlows {
+            descriptors: descriptors.clone(),
+            flows,
+            metadata: PackMetadata::fallback(Path::new("component-test")),
+        };
+
+        Ok(Self {
+            path: PathBuf::new(),
+            config,
+            engine,
+            metadata: PackMetadata::fallback(Path::new("component-test")),
+            manifest: None,
+            mocks: None,
+            flows: Some(flows_cache),
+            components: component_map,
+            http_client: Arc::clone(&HTTP_CLIENT),
+            pre_cache: Mutex::new(HashMap::new()),
+            session_store: None,
+            state_store: None,
+            wasi_policy: Arc::new(RunnerWasiPolicy::new()),
+            secrets: crate::secrets::default_manager(),
+            oauth_config: None,
+        })
+    }
 }
 
 fn map_legacy_error(err: LegacyIfaceError) -> types::IfaceError {
@@ -1066,6 +1172,31 @@ fn read_entry(archive: &mut ZipArchive<File>, name: &str) -> Result<Vec<u8>> {
     Ok(buf)
 }
 
+fn load_components_from_archive(
+    engine: &Engine,
+    path: &Path,
+) -> Result<HashMap<String, PackComponent>> {
+    let pack = open_pack(path, SigningPolicy::DevOk)
+        .map_err(|err| anyhow!("failed to open pack {}: {}", path.display(), err.message))?;
+    let mut archive = ZipArchive::new(File::open(path)?)?;
+    let mut components = HashMap::new();
+    for entry in &pack.manifest.components {
+        let bytes = read_entry(&mut archive, &entry.file_wasm)
+            .with_context(|| format!("missing component {}", entry.file_wasm))?;
+        let component = Component::from_binary(engine, &bytes)
+            .with_context(|| format!("failed to compile component {}", entry.name))?;
+        components.insert(
+            entry.name.clone(),
+            PackComponent {
+                name: entry.name.clone(),
+                version: entry.version.to_string(),
+                component,
+            },
+        );
+    }
+    Ok(components)
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct PackMetadata {
     pub pack_id: String,
@@ -1165,10 +1296,14 @@ fn build_stub_flow_ir(flow_id: &str, flow_type: &str) -> FlowIR {
     nodes.insert(
         "complete".into(),
         NodeIR {
-            component: "qa.process".into(),
+            component: "component.exec".into(),
             payload_expr: serde_json::json!({
-                "status": "done",
-                "flow_id": flow_id,
+                "component": "qa.process",
+                "operation": "process",
+                "input": {
+                    "status": "done",
+                    "flow_id": flow_id,
+                }
             }),
             routes: vec![RouteIR {
                 to: None,

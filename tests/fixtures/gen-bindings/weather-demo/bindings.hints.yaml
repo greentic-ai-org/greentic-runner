@@ -7,10 +7,3 @@ secrets:
 env:
   passthrough:
     - WEATHER_CITY
-mcp:
-  servers:
-    - name: weather-tools
-      transport: https
-      endpoint: https://mcp.weather.example.com
-      caps:
-        - forecast

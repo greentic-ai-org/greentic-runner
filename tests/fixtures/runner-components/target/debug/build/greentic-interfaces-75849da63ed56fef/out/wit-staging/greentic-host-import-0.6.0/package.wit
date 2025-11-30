@@ -1,0 +1,83 @@
+// SPDX-License-Identifier: MIT
+
+package greentic:host-import@0.6.0;
+
+/// secret management helpers
+interface secrets {
+  use greentic:types-core/types@0.4.0.{tenant-ctx, iface-error};
+
+  get: func(key: string, ctx: option<tenant-ctx>) -> result<string, iface-error>;
+}
+
+/// telemetry emission
+interface telemetry {
+  use greentic:types-core/types@0.4.0.{tenant-ctx};
+
+  emit: func(span-json: string, ctx: option<tenant-ctx>);
+}
+
+/// outbound HTTP helper
+interface http {
+  /// HTTP request payload issued by packs/components
+  record http-request {
+    method: string,
+    url: string,
+    headers-json: option<string>,
+    body: option<string>,
+  }
+
+  /// HTTP response returned by the host
+  record http-response {
+    status: u16,
+    headers-json: option<string>,
+    body: option<string>,
+  }
+
+  use greentic:types-core/types@0.4.0.{tenant-ctx, iface-error};
+
+  fetch: func(req: http-request, ctx: option<tenant-ctx>) -> result<http-response, iface-error>;
+}
+
+/// MCP/tool execution helper
+interface mcp {
+  use greentic:types-core/types@0.4.0.{tenant-ctx, iface-error};
+
+  exec: func(
+    component: string,
+    action: string,
+    args-json: string,
+    ctx: option<tenant-ctx>
+  ) -> result<string, iface-error>;
+}
+
+/// persistent state helpers
+interface state {
+  use greentic:types-core/types@0.4.0.{tenant-ctx, iface-error};
+  use greentic:interfaces-types/types@0.1.0.{state-key};
+  /// Trivial acknowledgment returned by write-only operations.
+  enum op-ack { ok }
+
+  get: func(key: state-key, ctx: option<tenant-ctx>) -> result<string, iface-error>;
+  set: func(
+    key: state-key,
+    value-json: string,
+    ctx: option<tenant-ctx>
+  ) -> result<op-ack, iface-error>;
+}
+
+/// session pause/resume helpers
+interface session {
+  use greentic:types-core/types@0.4.0.{tenant-ctx, iface-error};
+  use greentic:interfaces-types/types@0.1.0.{session-cursor};
+
+  update: func(cursor: session-cursor, ctx: option<tenant-ctx>) -> result<string, iface-error>;
+}
+
+world host-imports {
+  import secrets;
+  import telemetry;
+  import http;
+  import mcp;
+  import state;
+  import session;
+}

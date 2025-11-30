@@ -1,0 +1,17 @@
+[package]
+name = "runner_components_packager"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+greentic-pack = "0.4"
+greentic-flow = "0.4"
+indexmap = "2"
+semver = "1"
+serde = { version = "1", features = ["derive"] }
+serde_yaml = "0.9"
+serde_json = "1"
+time = { version = "0.3", features = ["formatting"] }
+zip = "0.6"

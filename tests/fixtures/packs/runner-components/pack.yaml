@@ -1,0 +1,18 @@
+packVersion: 1
+id: runner.components
+name: runner.components
+version: 0.1.0
+components:
+  - id: qa.process
+    version: 0.1.0
+    path: ./components/qa_process.wasm
+  - id: templating.handlebars
+    version: 0.1.0
+    path: ./components/templating_handlebars.wasm
+flows:
+  - id: demo.flow
+    kind: messaging
+    entry: qa
+    file_yaml: flows/demo.yaml
+entry_flows:
+  - demo.flow

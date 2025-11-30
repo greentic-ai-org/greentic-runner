@@ -1,0 +1,28 @@
+// SPDX-License-Identifier: MIT
+
+package greentic:secrets@1.0.0;
+
+/// Secrets interface exposed by Greentic hosts.
+interface secret-store {
+  /// Canonical host error payload.
+  record host-error {
+    code: string,
+    message: string,
+  }
+
+  /// Trivial acknowledgment returned by write/delete operations.
+  enum op-ack { ok }
+
+  /// Reads a secret value.
+  read: func(name: string) -> result<list<u8>, host-error>;
+
+  /// Persists or updates a secret value.
+  write: func(name: string, bytes: list<u8>) -> result<op-ack, host-error>;
+
+  /// Deletes a secret.
+  delete: func(name: string) -> result<op-ack, host-error>;
+}
+
+world store {
+  import secret-store;
+}

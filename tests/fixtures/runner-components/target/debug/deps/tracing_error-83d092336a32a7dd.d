@@ -1,0 +1,10 @@
+/Users/maarten/Documents/GitHub/agentic/greentic-runner/tests/fixtures/runner-components/target/debug/deps/tracing_error-83d092336a32a7dd.d: /Users/maarten/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tracing-error-0.2.1/src/lib.rs /Users/maarten/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tracing-error-0.2.1/src/backtrace.rs /Users/maarten/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tracing-error-0.2.1/src/error.rs /Users/maarten/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tracing-error-0.2.1/src/layer.rs
+
+/Users/maarten/Documents/GitHub/agentic/greentic-runner/tests/fixtures/runner-components/target/debug/deps/libtracing_error-83d092336a32a7dd.rlib: /Users/maarten/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tracing-error-0.2.1/src/lib.rs /Users/maarten/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tracing-error-0.2.1/src/backtrace.rs /Users/maarten/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tracing-error-0.2.1/src/error.rs /Users/maarten/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tracing-error-0.2.1/src/layer.rs
+
+/Users/maarten/Documents/GitHub/agentic/greentic-runner/tests/fixtures/runner-components/target/debug/deps/libtracing_error-83d092336a32a7dd.rmeta: /Users/maarten/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tracing-error-0.2.1/src/lib.rs /Users/maarten/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tracing-error-0.2.1/src/backtrace.rs /Users/maarten/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tracing-error-0.2.1/src/error.rs /Users/maarten/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tracing-error-0.2.1/src/layer.rs
+
+/Users/maarten/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tracing-error-0.2.1/src/lib.rs:
+/Users/maarten/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tracing-error-0.2.1/src/backtrace.rs:
+/Users/maarten/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tracing-error-0.2.1/src/error.rs:
+/Users/maarten/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tracing-error-0.2.1/src/layer.rs:

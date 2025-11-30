@@ -1,0 +1,28 @@
+id: demo.flow
+kind: messaging
+entry: qa
+nodes:
+  qa:
+    component: component.exec
+    payload:
+      component: qa.process
+      operation: process
+      input:
+        text: "hello"
+    routes:
+      - to: tmpl
+  tmpl:
+    component: component.exec
+    payload:
+      component: templating.handlebars
+      operation: render
+      input:
+        template: "Echo: {{state.nodes.qa.payload.text}}"
+    routes:
+      - to: emit
+  emit:
+    component: emit.response
+    payload:
+      from_node: tmpl
+    routes:
+      - out: true

@@ -1,0 +1,62 @@
+// SPDX-License-Identifier: MIT
+
+package greentic:source@1.0.0;
+
+interface source-api {
+  use greentic:interfaces-types/types@0.1.0.{tenant-ctx};
+
+  /// Canonical host error payload.
+  record host-error {
+    code: string,
+    message: string,
+  }
+
+  /// Repository reference (provider-agnostic).
+  record repository-ref {
+    id: string,
+    url: option<string>,
+    extra: option<string>,
+  }
+
+  /// Branch reference with optional head commit.
+  record branch-ref {
+    name: string,
+    head: option<commit-ref>,
+    extra: option<string>,
+  }
+
+  /// Commit reference.
+  record commit-ref {
+    id: string,
+    extra: option<string>,
+  }
+
+  /// Opaque webhook identifier.
+  record webhook-id {
+    id: string,
+    url: option<string>,
+    extra: option<string>,
+  }
+
+  /// Basic commit metadata with provider-specific extension field.
+  record commit-metadata {
+    sha: string,
+    message: string,
+    author: string,
+    author-email: string,
+    committed-at-utc: string,
+    extra: option<string>,
+  }
+
+  list-repositories: func(ctx: tenant-ctx) -> result<list<repository-ref>, host-error>;
+
+  list-branches: func(ctx: tenant-ctx, repository: repository-ref) -> result<list<branch-ref>, host-error>;
+
+  get-commit: func(ctx: tenant-ctx, repository: repository-ref, commit: commit-ref) -> result<commit-metadata, host-error>;
+
+  register-webhook: func(ctx: tenant-ctx, repository: repository-ref, events: list<string>) -> result<webhook-id, host-error>;
+}
+
+world source-sync {
+  export source-api;
+}

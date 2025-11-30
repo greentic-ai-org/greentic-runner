@@ -1,0 +1,71 @@
+// SPDX-License-Identifier: MIT
+
+package greentic:worker@1.0.0;
+
+interface worker-api {
+  use greentic:types-core/types@0.4.0.{tenant-ctx};
+
+  /// Generic worker invocation envelope.
+  record worker-request {
+    /// ABI version identifier (e.g. "1.0").
+    version: string,
+    /// Tenant execution context.
+    tenant: tenant-ctx,
+    /// Worker identifier (e.g. "greentic-repo-assistant").
+    worker-id: string,
+    /// Optional correlation handle.
+    correlation-id: option<string>,
+    /// Optional session identifier.
+    session-id: option<string>,
+    /// Optional thread identifier.
+    thread-id: option<string>,
+    /// JSON-encoded payload (opaque to the ABI).
+    payload-json: string,
+    /// ISO8601 UTC timestamp.
+    timestamp-utc: string,
+  }
+
+  /// Generic worker message emitted in a response.
+  record worker-message {
+    /// Message kind (e.g. "text", "card", "event").
+    kind: string,
+    /// JSON-encoded message/card/event payload.
+    payload-json: string,
+  }
+
+  /// Worker response envelope (non-streaming).
+  record worker-response {
+    /// Mirrors the request version.
+    version: string,
+    /// Tenant execution context.
+    tenant: tenant-ctx,
+    /// Worker identifier (e.g. "greentic-repo-assistant").
+    worker-id: string,
+    /// Optional correlation handle.
+    correlation-id: option<string>,
+    /// Optional session identifier.
+    session-id: option<string>,
+    /// Optional thread identifier.
+    thread-id: option<string>,
+    /// Accumulated worker messages.
+    messages: list<worker-message>,
+    /// ISO8601 UTC timestamp.
+    timestamp-utc: string,
+  }
+
+  /// Structured worker error payload.
+  record worker-error {
+    /// Error category (e.g. "transport_error", "bad_request").
+    code: string,
+    /// Human-readable error description.
+    message: string,
+  }
+
+  /// Execute a worker for the given request.
+  /// Implementations may be local or remote.
+  exec: func(req: worker-request) -> result<worker-response, worker-error>;
+}
+
+world worker {
+  export worker-api;
+}

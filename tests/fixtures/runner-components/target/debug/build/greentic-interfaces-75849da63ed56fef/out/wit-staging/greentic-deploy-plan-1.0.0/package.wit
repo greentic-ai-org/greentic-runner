@@ -1,0 +1,17 @@
+// SPDX-License-Identifier: MIT
+
+package greentic:deploy-plan@1.0.0;
+
+/// Access to the deployment plan for the current flow execution.
+interface plan-api {
+  /// Returns the DeploymentPlan as a JSON string. The payload matches the
+  /// greentic-types DeploymentPlan structure.
+  get-deployment-plan: func() -> string;
+
+  /// Emit a generic status message that hosts may log or surface in a UI.
+  emit-status: func(message: string);
+}
+
+world plan {
+  export plan-api;
+}

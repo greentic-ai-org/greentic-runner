@@ -1,0 +1,60 @@
+// SPDX-License-Identifier: MIT
+
+package greentic:signing@1.0.0;
+
+interface signer-api {
+  use greentic:interfaces-types/types@0.1.0.{tenant-ctx};
+
+  /// Canonical host error payload.
+  record host-error {
+    code: string,
+    message: string,
+  }
+
+  /// Reference to a signing key (handle only).
+  record signing-key-ref {
+    id: string,
+    key-spec: option<string>,
+    extra: option<string>,
+  }
+
+  /// Reference to a generated signature.
+  record signature-ref {
+    id: string,
+    algorithm: option<string>,
+    value: option<list<u8>>,
+    extra: option<string>,
+  }
+
+  /// Sign request payload.
+  record sign-request {
+    payload-ref: string,
+    payload-digest: option<string>,
+    key: signing-key-ref,
+    extra: option<string>,
+  }
+
+  /// Verify request payload.
+  record verify-request {
+    payload-ref: string,
+    payload-digest: option<string>,
+    signature: signature-ref,
+    key: option<signing-key-ref>,
+    extra: option<string>,
+  }
+
+  /// Verification outcome.
+  record verify-result {
+    valid: bool,
+    reason: option<string>,
+    extra: option<string>,
+  }
+
+  sign: func(ctx: tenant-ctx, request: sign-request) -> result<signature-ref, host-error>;
+
+  verify: func(ctx: tenant-ctx, request: verify-request) -> result<verify-result, host-error>;
+}
+
+world signer {
+  export signer-api;
+}

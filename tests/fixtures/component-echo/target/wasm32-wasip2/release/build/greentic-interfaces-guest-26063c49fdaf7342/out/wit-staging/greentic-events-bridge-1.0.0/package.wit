@@ -1,0 +1,23 @@
+// SPDX-License-Identifier: MIT
+
+package greentic:events-bridge@1.0.0;
+
+interface bridge-api {
+  use greentic:interfaces-types/types@0.1.0.{tenant-ctx};
+  use greentic:events/event-types@1.0.0.{event-envelope};
+  use greentic:messaging/session-api@1.0.0.{channel-message-envelope};
+
+  /// Transform a channel message into zero or more events.
+  handle-message: func(msg: channel-message-envelope) -> list<event-envelope>;
+
+  /// Transform an event into zero or more channel messages.
+  handle-event: func(ev: event-envelope) -> list<channel-message-envelope>;
+}
+
+world message-to-event-bridge {
+  export bridge-api;
+}
+
+world event-to-message-bridge {
+  export bridge-api;
+}

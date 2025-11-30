@@ -1,0 +1,35 @@
+// SPDX-License-Identifier: MIT
+
+package greentic:state@1.0.0;
+
+use greentic:interfaces-types/types@0.1.0;
+
+interface state-store {
+  use greentic:interfaces-types/types@0.1.0.{state-key, tenant-ctx};
+
+  /// Canonical host error payload.
+  record host-error {
+    code: string,
+    message: string,
+  }
+
+  /// Trivial acknowledgment for write/delete.
+  enum op-ack { ok }
+
+  /// Reads a namespaced blob of state.
+  read: func(key: state-key, ctx: option<tenant-ctx>) -> result<list<u8>, host-error>;
+
+  /// Writes a namespaced blob of state.
+  write: func(
+    key: state-key,
+    bytes: list<u8>,
+    ctx: option<tenant-ctx>
+  ) -> result<op-ack, host-error>;
+
+  /// Deletes a namespaced blob of state.
+  delete: func(key: state-key, ctx: option<tenant-ctx>) -> result<op-ack, host-error>;
+}
+
+world store {
+  import state-store;
+}

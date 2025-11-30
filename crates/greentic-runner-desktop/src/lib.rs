@@ -2,7 +2,7 @@ use anyhow::{Context, Result, anyhow};
 use greentic_pack::reader::{PackLoad, open_pack};
 use greentic_runner_host::RunnerWasiPolicy;
 use greentic_runner_host::config::{
-    HostConfig, McpConfig, McpRetryConfig, RateLimits, SecretsPolicy, WebhookPolicy,
+    FlowRetryConfig, HostConfig, RateLimits, SecretsPolicy, WebhookPolicy,
 };
 use greentic_runner_host::pack::{FlowDescriptor, PackMetadata, PackRuntime};
 use greentic_runner_host::runner::engine::{ExecutionObserver, FlowContext, FlowEngine, NodeEvent};
@@ -15,7 +15,6 @@ use greentic_runner_host::storage::{new_session_store, new_state_store};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map as JsonMap, Value, json};
-use serde_yaml_bw::{Mapping as YamlMapping, Value as YamlValue};
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::fs::{self, File};
@@ -317,7 +316,7 @@ async fn run_pack_async(pack_path: &Path, opts: RunOptions) -> Result<RunResult>
         action: Some("run_pack"),
         session_id: Some(session_id_owned.as_str()),
         provider_id: Some(provider_id_owned.as_str()),
-        retry_config: host_config.mcp_retry_config().into(),
+        retry_config: host_config.retry_config().into(),
         observer: Some(recorder_ref),
         mocks: Some(mock_ref),
     };
@@ -486,38 +485,18 @@ fn resolve_profile(profile: &Profile, ctx: &TenantContext) -> ResolvedProfile {
 }
 
 fn build_host_config(profile: &ResolvedProfile, dirs: &RunDirectories) -> HostConfig {
-    let mut store = YamlMapping::new();
-    store.insert(YamlValue::from("kind"), YamlValue::from("local-dir"));
-    store.insert(
-        YamlValue::from("path"),
-        YamlValue::from("./.greentic/tools"),
-    );
-    let mut runtime = YamlMapping::new();
-    runtime.insert(YamlValue::from("max_memory_mb"), YamlValue::from(256u64));
-    runtime.insert(
-        YamlValue::from("timeout_ms"),
-        YamlValue::from(profile.max_node_wall_time_ms),
-    );
-    runtime.insert(YamlValue::from("fuel"), YamlValue::from(50_000_000u64));
-    let mut security = YamlMapping::new();
-    security.insert(YamlValue::from("require_signature"), YamlValue::from(false));
     HostConfig {
         tenant: profile.tenant_id.clone(),
         bindings_path: dirs.resolved.join("dev.bindings.yaml"),
         flow_type_bindings: HashMap::new(),
-        mcp: McpConfig {
-            store: YamlValue::Mapping(store),
-            security: YamlValue::Mapping(security),
-            runtime: YamlValue::Mapping(runtime),
-            http_enabled: Some(false),
-            retry: Some(McpRetryConfig::default()),
-        },
         rate_limits: RateLimits::default(),
+        retry: FlowRetryConfig::default(),
         http_enabled: false,
         secrets_policy: SecretsPolicy::allow_all(),
         webhook_policy: WebhookPolicy::default(),
         timers: Vec::new(),
         oauth: None,
+        mocks: None,
     }
 }
 

@@ -1,0 +1,65 @@
+// SPDX-License-Identifier: MIT
+
+package greentic:scan@1.0.0;
+
+interface scanner-api {
+  use greentic:interfaces-types/types@0.1.0.{tenant-ctx};
+
+  /// Canonical host error payload.
+  record host-error {
+    code: string,
+    message: string,
+  }
+
+  /// Scan category.
+  enum scan-kind {
+    sast,
+    deps,
+    container,
+    secrets,
+    other,
+  }
+
+  /// SBOM reference.
+  record sbom-ref {
+    id: string,
+    uri: option<string>,
+    digest: option<string>,
+    extra: option<string>,
+  }
+
+  /// Scan request payload.
+  record scan-request {
+    request-id: string,
+    kind: scan-kind,
+    target-ref: string,
+    params-json: option<string>,
+    extra: option<string>,
+  }
+
+  /// Scan lifecycle state.
+  enum scan-state {
+    queued,
+    running,
+    passed,
+    failed,
+  }
+
+  /// Scan result payload.
+  record scan-result {
+    request-id: string,
+    kind: scan-kind,
+    state: scan-state,
+    started-at-utc: option<string>,
+    finished-at-utc: option<string>,
+    sbom: option<sbom-ref>,
+    findings-json: option<string>,
+    extra: option<string>,
+  }
+
+  execute-scan: func(ctx: tenant-ctx, request: scan-request) -> result<scan-result, host-error>;
+}
+
+world scanner {
+  export scanner-api;
+}

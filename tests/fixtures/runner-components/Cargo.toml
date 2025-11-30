@@ -1,0 +1,10 @@
+[workspace]
+members = [
+    "qa_process",
+    "templating_handlebars",
+    "packager",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"

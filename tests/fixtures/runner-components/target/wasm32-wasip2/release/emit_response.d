@@ -1,0 +1,1 @@
+/Users/maarten/Documents/GitHub/agentic/greentic-runner/tests/fixtures/runner-components/target/wasm32-wasip2/release/emit_response.wasm: /Users/maarten/Documents/GitHub/agentic/greentic-runner/tests/fixtures/runner-components/emit_response/src/lib.rs

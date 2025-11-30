@@ -4,23 +4,17 @@ use std::error::Error as StdError;
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::component_api::node::{ExecCtx as ComponentExecCtx, TenantCtx as ComponentTenantCtx};
 use anyhow::{Context, Result, anyhow, bail};
 use greentic_flow::ir::{FlowIR, NodeIR};
-#[cfg(feature = "mcp")]
-use greentic_mcp::{ExecConfig, ExecRequest};
-#[cfg(feature = "mcp")]
-use greentic_types::TenantCtx as TypesTenantCtx;
-use handlebars::Handlebars;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map as JsonMap, Value, json};
 use tokio::task;
 
 use super::mocks::MockLayer;
-use crate::config::{HostConfig, McpRetryConfig};
+use crate::config::{FlowRetryConfig, HostConfig};
 use crate::pack::{FlowDescriptor, PackRuntime};
-#[cfg(feature = "mcp")]
-use crate::telemetry::tenant_context;
 use crate::telemetry::{FlowSpanAttributes, annotate_span, backoff_delay_ms, set_flow_context};
 
 pub struct FlowEngine {
@@ -28,9 +22,6 @@ pub struct FlowEngine {
     flows: Vec<FlowDescriptor>,
     flow_sources: HashMap<String, usize>,
     flow_ir: RwLock<HashMap<String, FlowIR>>,
-    #[cfg(feature = "mcp")]
-    exec_config: ExecConfig,
-    template_engine: Arc<Handlebars<'static>>,
     default_env: String,
 }
 
@@ -76,9 +67,7 @@ impl FlowExecution {
 }
 
 impl FlowEngine {
-    pub async fn new(packs: Vec<Arc<PackRuntime>>, config: Arc<HostConfig>) -> Result<Self> {
-        #[cfg(not(feature = "mcp"))]
-        let _ = &config;
+    pub async fn new(packs: Vec<Arc<PackRuntime>>, _config: Arc<HostConfig>) -> Result<Self> {
         let mut flow_sources = HashMap::new();
         let mut descriptors = Vec::new();
         for (idx, pack) in packs.iter().enumerate() {
@@ -95,11 +84,6 @@ impl FlowEngine {
                 descriptors.push(flow);
             }
         }
-
-        #[cfg(feature = "mcp")]
-        let exec_config = config
-            .mcp_exec_config()
-            .context("failed to build MCP executor config")?;
 
         let mut ir_map = HashMap::new();
         for flow in &descriptors {
@@ -121,17 +105,11 @@ impl FlowEngine {
             }
         }
 
-        let mut handlebars = Handlebars::new();
-        handlebars.set_strict_mode(false);
-
         Ok(Self {
             packs,
             flows: descriptors,
             flow_sources,
             flow_ir: RwLock::new(ir_map),
-            #[cfg(feature = "mcp")]
-            exec_config,
-            template_engine: Arc::new(handlebars),
             default_env: env::var("GREENTIC_ENV").unwrap_or_else(|_| "local".to_string()),
         })
     }
@@ -264,12 +242,7 @@ impl FlowEngine {
                 .get(&current)
                 .with_context(|| format!("node {current} not found"))?;
 
-            let context_value = state.context();
-            let payload = resolve_template_value(
-                self.template_engine.as_ref(),
-                &node.payload_expr,
-                &context_value,
-            )?;
+            let payload = node.payload_expr.clone();
             let observed_payload = payload.clone();
             let node_id = current.clone();
             let event = NodeEvent {
@@ -345,19 +318,15 @@ impl FlowEngine {
     async fn dispatch_node(
         &self,
         ctx: &FlowContext<'_>,
-        _node_id: &str,
+        node_id: &str,
         node: &NodeIR,
         state: &mut ExecutionState,
         payload: Value,
     ) -> Result<DispatchOutcome> {
         match node.component.as_str() {
-            "qa.process" => Ok(DispatchOutcome::complete(NodeOutput::new(payload))),
-            "mcp.exec" => self
-                .execute_mcp(ctx, payload)
+            "component.exec" => self
+                .execute_component_exec(ctx, node_id, state, payload)
                 .await
-                .map(DispatchOutcome::complete),
-            "templating.handlebars" => self
-                .execute_template(state, payload)
                 .map(DispatchOutcome::complete),
             "flow.call" => self
                 .execute_flow_call(ctx, payload)
@@ -424,70 +393,65 @@ impl FlowEngine {
         }
     }
 
-    async fn execute_mcp(&self, ctx: &FlowContext<'_>, payload: Value) -> Result<NodeOutput> {
-        #[cfg(not(feature = "mcp"))]
-        {
-            let _ = (ctx, payload);
-            bail!("crate built without `mcp` feature; mcp.exec nodes are unavailable");
+    async fn execute_component_exec(
+        &self,
+        ctx: &FlowContext<'_>,
+        node_id: &str,
+        state: &ExecutionState,
+        payload: Value,
+    ) -> Result<NodeOutput> {
+        #[derive(Deserialize)]
+        struct ComponentPayload {
+            #[serde(default, alias = "component_ref", alias = "component")]
+            component: Option<String>,
+            #[serde(alias = "op")]
+            operation: Option<String>,
+            #[serde(default)]
+            input: Value,
+            #[serde(default)]
+            config: Value,
         }
 
-        #[cfg(feature = "mcp")]
-        {
-            #[derive(Deserialize)]
-            struct McpPayload {
-                component: String,
-                action: String,
-                #[serde(default)]
-                args: Value,
-            }
-
-            let payload: McpPayload =
-                serde_json::from_value(payload).context("invalid payload for mcp.exec node")?;
-
-            if let Some(mocks) = ctx.mocks
-                && let Some(result) = mocks.tool_short_circuit(&payload.component, &payload.action)
-            {
-                let value = result.map_err(|err| anyhow!(err))?;
-                return Ok(NodeOutput::new(value));
-            }
-
-            let request = ExecRequest {
-                component: payload.component,
-                action: payload.action,
-                args: payload.args,
-                tenant: Some(types_tenant_ctx(ctx, &self.default_env)),
-            };
-
-            let exec_config = self.exec_config.clone();
-            let exec_result =
-                task::spawn_blocking(move || greentic_mcp::exec(request, &exec_config))
-                    .await
-                    .context("failed to join mcp.exec")?;
-            let value = exec_result.map_err(|err| anyhow!(err))?;
-
-            Ok(NodeOutput::new(value))
+        let payload: ComponentPayload =
+            serde_json::from_value(payload).context("invalid payload for component.exec")?;
+        let component_ref = payload
+            .component
+            .filter(|v| !v.trim().is_empty())
+            .with_context(|| "component.exec requires a component_ref")?;
+        let operation = payload
+            .operation
+            .filter(|v| !v.trim().is_empty())
+            .with_context(|| "component.exec requires an operation")?;
+        let mut input = payload.input;
+        if let Value::Object(mut map) = input {
+            map.entry("state".to_string())
+                .or_insert_with(|| state.context());
+            input = Value::Object(map);
         }
-    }
+        let input_json = serde_json::to_string(&input)?;
+        let config_json = if payload.config.is_null() {
+            None
+        } else {
+            Some(serde_json::to_string(&payload.config)?)
+        };
 
-    fn execute_template(&self, state: &ExecutionState, payload: Value) -> Result<NodeOutput> {
-        let payload: TemplatePayload = serde_json::from_value(payload)
-            .context("invalid payload for templating.handlebars node")?;
+        let pack_idx = *self
+            .flow_sources
+            .get(ctx.flow_id)
+            .with_context(|| format!("flow {} not registered", ctx.flow_id))?;
+        let pack = Arc::clone(&self.packs[pack_idx]);
+        let exec_ctx = component_exec_ctx(ctx, node_id);
+        let value = pack
+            .invoke_component(
+                &component_ref,
+                exec_ctx,
+                &operation,
+                config_json,
+                input_json,
+            )
+            .await?;
 
-        let mut context = state.context();
-        if !payload.data.is_null() {
-            let data =
-                resolve_template_value(self.template_engine.as_ref(), &payload.data, &context)?;
-            merge_values(&mut context, data);
-        }
-
-        let rendered = render_template(
-            self.template_engine.as_ref(),
-            &payload.template,
-            &payload.partials,
-            &context,
-        )?;
-
-        Ok(NodeOutput::new(json!({ "text": rendered })))
+        Ok(NodeOutput::new(value))
     }
 
     pub fn flows(&self) -> &[FlowDescriptor] {
@@ -619,77 +583,21 @@ impl DispatchOutcome {
     }
 }
 
-#[derive(Deserialize)]
-struct TemplatePayload {
-    template: String,
-    #[serde(default)]
-    partials: HashMap<String, String>,
-    #[serde(default)]
-    data: Value,
-}
-
-fn resolve_template_value(
-    engine: &Handlebars<'static>,
-    value: &Value,
-    context: &Value,
-) -> Result<Value> {
-    match value {
-        Value::String(s) => {
-            if s.contains("{{") {
-                let rendered = engine
-                    .render_template(s, context)
-                    .with_context(|| format!("failed to render template: {s}"))?;
-                Ok(Value::String(rendered))
-            } else {
-                Ok(Value::String(s.clone()))
-            }
-        }
-        Value::Array(items) => {
-            let values = items
-                .iter()
-                .map(|v| resolve_template_value(engine, v, context))
-                .collect::<Result<Vec<_>>>()?;
-            Ok(Value::Array(values))
-        }
-        Value::Object(map) => {
-            let mut resolved = JsonMap::new();
-            for (key, v) in map {
-                resolved.insert(key.clone(), resolve_template_value(engine, v, context)?);
-            }
-            Ok(Value::Object(resolved))
-        }
-        other => Ok(other.clone()),
+fn component_exec_ctx(ctx: &FlowContext<'_>, node_id: &str) -> ComponentExecCtx {
+    ComponentExecCtx {
+        tenant: ComponentTenantCtx {
+            tenant: ctx.tenant.to_string(),
+            team: None,
+            user: ctx.provider_id.map(str::to_string),
+            trace_id: None,
+            correlation_id: ctx.session_id.map(str::to_string),
+            deadline_unix_ms: None,
+            attempt: 1,
+            idempotency_key: ctx.session_id.map(str::to_string),
+        },
+        flow_id: ctx.flow_id.to_string(),
+        node_id: Some(node_id.to_string()),
     }
-}
-
-fn merge_values(target: &mut Value, addition: Value) {
-    match (target, addition) {
-        (Value::Object(target_map), Value::Object(add_map)) => {
-            for (key, value) in add_map {
-                merge_values(target_map.entry(key).or_insert(Value::Null), value);
-            }
-        }
-        (slot, value) => {
-            *slot = value;
-        }
-    }
-}
-
-fn render_template(
-    base: &Handlebars<'static>,
-    template: &str,
-    partials: &HashMap<String, String>,
-    context: &Value,
-) -> Result<String> {
-    let mut engine = base.clone();
-    for (name, body) in partials {
-        engine
-            .register_template_string(name, body)
-            .with_context(|| format!("failed to register partial {name}"))?;
-    }
-    engine
-        .render_template(template, context)
-        .with_context(|| "failed to render template")
 }
 
 fn extract_wait_reason(payload: &Value) -> Option<String> {
@@ -701,18 +609,6 @@ fn extract_wait_reason(payload: &Value) -> Option<String> {
             .map(|value| value.to_string()),
         _ => None,
     }
-}
-
-#[cfg(feature = "mcp")]
-fn types_tenant_ctx(ctx: &FlowContext<'_>, default_env: &str) -> TypesTenantCtx {
-    tenant_context(
-        default_env,
-        ctx.tenant,
-        Some(ctx.flow_id),
-        ctx.node_id,
-        ctx.provider_id,
-        ctx.session_id,
-    )
 }
 
 #[cfg(test)]
@@ -728,28 +624,9 @@ mod tests {
             NodeOutput::new(json!({ "temp": "20C" })),
         );
 
-        let mut partials = HashMap::new();
-        partials.insert(
-            "line".to_string(),
-            "Weather in {{input.city}}: {{nodes.forecast.payload.temp}} {{extra.note}}".to_string(),
-        );
-
-        let payload = TemplatePayload {
-            template: "{{> line}}".to_string(),
-            partials,
-            data: json!({ "extra": { "note": "today" } }),
-        };
-
-        let mut base = Handlebars::new();
-        base.set_strict_mode(false);
-
-        let mut context = state.context();
-        let data = resolve_template_value(&base, &payload.data, &context).unwrap();
-        merge_values(&mut context, data);
-        let rendered =
-            render_template(&base, &payload.template, &payload.partials, &context).unwrap();
-
-        assert_eq!(rendered, "Weather in London: 20C today");
+        // templating handled via component now; ensure context still includes node outputs
+        let ctx = state.context();
+        assert_eq!(ctx["nodes"]["forecast"]["payload"]["temp"], json!("20C"));
     }
 
     #[test]
@@ -813,8 +690,8 @@ fn should_retry(err: &anyhow::Error) -> bool {
     lower.contains("transient") || lower.contains("unavailable") || lower.contains("internal")
 }
 
-impl From<McpRetryConfig> for RetryConfig {
-    fn from(value: McpRetryConfig) -> Self {
+impl From<FlowRetryConfig> for RetryConfig {
+    fn from(value: FlowRetryConfig) -> Self {
         Self {
             max_attempts: value.max_attempts.max(1),
             base_delay_ms: value.base_delay_ms.max(50),

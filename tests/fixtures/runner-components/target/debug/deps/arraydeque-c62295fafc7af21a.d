@@ -1,0 +1,10 @@
+/Users/maarten/Documents/GitHub/agentic/greentic-runner/tests/fixtures/runner-components/target/debug/deps/arraydeque-c62295fafc7af21a.d: /Users/maarten/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/arraydeque-0.5.1/src/lib.rs /Users/maarten/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/arraydeque-0.5.1/src/behavior.rs /Users/maarten/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/arraydeque-0.5.1/src/error.rs /Users/maarten/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/arraydeque-0.5.1/src/range.rs
+
+/Users/maarten/Documents/GitHub/agentic/greentic-runner/tests/fixtures/runner-components/target/debug/deps/libarraydeque-c62295fafc7af21a.rlib: /Users/maarten/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/arraydeque-0.5.1/src/lib.rs /Users/maarten/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/arraydeque-0.5.1/src/behavior.rs /Users/maarten/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/arraydeque-0.5.1/src/error.rs /Users/maarten/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/arraydeque-0.5.1/src/range.rs
+
+/Users/maarten/Documents/GitHub/agentic/greentic-runner/tests/fixtures/runner-components/target/debug/deps/libarraydeque-c62295fafc7af21a.rmeta: /Users/maarten/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/arraydeque-0.5.1/src/lib.rs /Users/maarten/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/arraydeque-0.5.1/src/behavior.rs /Users/maarten/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/arraydeque-0.5.1/src/error.rs /Users/maarten/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/arraydeque-0.5.1/src/range.rs
+
+/Users/maarten/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/arraydeque-0.5.1/src/lib.rs:
+/Users/maarten/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/arraydeque-0.5.1/src/behavior.rs:
+/Users/maarten/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/arraydeque-0.5.1/src/error.rs:
+/Users/maarten/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/arraydeque-0.5.1/src/range.rs:

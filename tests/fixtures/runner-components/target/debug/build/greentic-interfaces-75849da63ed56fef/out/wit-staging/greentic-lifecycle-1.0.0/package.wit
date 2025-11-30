@@ -1,0 +1,18 @@
+// SPDX-License-Identifier: MIT
+
+package greentic:lifecycle@1.0.0;
+
+/// Optional lifecycle hooks components may expose.
+interface lifecycle-v1 {
+  enum lifecycle-health {
+    ok,
+  }
+
+  init: func();
+  health: func() -> result<lifecycle-health, string>;
+  shutdown: func();
+}
+
+world component-lifecycle {
+  export lifecycle-v1;
+}

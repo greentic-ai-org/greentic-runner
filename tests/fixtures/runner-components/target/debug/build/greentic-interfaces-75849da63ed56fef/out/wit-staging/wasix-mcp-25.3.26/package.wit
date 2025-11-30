@@ -1,0 +1,278 @@
+package wasix:mcp@25.3.26;
+
+/// MCP router snapshot (2025-03-26) with annotations, audio, completions, and progress.
+interface router {
+  /// Generic JSON wrapper.
+  record value { json: string }
+
+  /// UTC datetime encoded as string.
+  type datetime = string;
+
+  /// Optional annotations for tools/content/resources.
+  record annotations {
+    audience: option<list<role>>,
+    priority: option<f32>,
+    timestamp: option<datetime>,
+  }
+
+  enum role {
+    user,
+    assistant,
+  }
+
+  /// Host-facing config descriptor (kept as metadata).
+  record config-descriptor {
+    name: string,
+    description: string,
+    required: bool,
+  }
+
+  /// Host-facing secret descriptor (kept as metadata).
+  record secret-descriptor {
+    name: string,
+    description: string,
+    required: bool,
+  }
+
+  /// Simple key/value metadata list for metadata blocks.
+  record meta-entry {
+    key: string,
+    value: string,
+  }
+
+  /// Tool classification annotations.
+  record tool-annotations {
+    /// Safe, read-only operation.
+    read-only: option<bool>,
+    /// Operation mutates state or external systems.
+    destructive: option<bool>,
+    /// Operation may stream partial results.
+    streaming: option<bool>,
+    /// Experimental or unstable surface.
+    experimental: option<bool>,
+  }
+
+  /// Internal metadata for tools.
+  record tool-meta {
+    output-hint: option<string>,
+    config: option<list<config-descriptor>>,
+    secrets: option<list<secret-descriptor>>,
+    config-meta: option<list<meta-entry>>,
+    extra: option<list<meta-entry>>,
+  }
+
+  /// Tool descriptor.
+  record tool {
+    name: string,
+    description: string,
+    input-schema: value,
+    output-schema: option<value>,
+    annotations: option<tool-annotations>,
+    meta: option<tool-meta>,
+  }
+
+  /// Prompts capability (list_changed field).
+  record prompts-capability {
+    list-changed: option<bool>,
+  }
+
+  /// Resources capability (subscribe and list_changed fields).
+  record resources-capability {
+    subscribe: option<bool>,
+    list-changed: option<bool>,
+  }
+
+  /// Tools capability (list_changed field).
+  record tools-capability {
+    list-changed: option<bool>,
+  }
+
+  /// Completions capability marker.
+  record completions-capability {
+    enabled: bool,
+  }
+
+  /// Server-wide capabilities.
+  record server-capabilities {
+    prompts: option<prompts-capability>,
+    resources: option<resources-capability>,
+    tools: option<tools-capability>,
+    completions: option<completions-capability>,
+  }
+
+  /// Progress notification from a running tool.
+  record progress-notification {
+    progress: option<f32>,
+    message: option<string>,
+    annotations: option<annotations>,
+  }
+
+  /// Tool invocation result.
+  record call-tool-result {
+    content: list<content>,
+    progress: option<list<progress-notification>>,
+    meta: option<list<meta-entry>>,
+    is-error: option<bool>,
+  }
+
+  /// Content variants supported by the router.
+  variant content {
+    text(text-content),
+    image(image-content),
+    audio(audio-content),
+    embedded(embedded-resource),
+  }
+
+  record text-content {
+    text: string,
+    annotations: option<annotations>,
+  }
+
+  record image-content {
+    data: string,
+    mime-type: string,
+    annotations: option<annotations>,
+  }
+
+  record audio-content {
+    data: string,
+    mime-type: string,
+    annotations: option<annotations>,
+  }
+
+  record embedded-resource {
+    resource-contents: resource-contents,
+    annotations: option<annotations>,
+  }
+
+  record mcp-resource {
+    uri: string,
+    name: string,
+    description: option<string>,
+    mime-type: string,
+    annotations: option<annotations>,
+  }
+
+  record text-resource-contents {
+    uri: string,
+    mime-type: option<string>,
+    text: string,
+  }
+
+  record blob-resource-contents {
+    uri: string,
+    mime-type: option<string>,
+    blob: string,
+  }
+
+  /// Text or binary resource payload.
+  variant resource-contents {
+    text(text-resource-contents),
+    blob(blob-resource-contents),
+  }
+
+  record read-resource-result {
+    contents: list<resource-contents>,
+  }
+
+  /// Tool-level errors.
+  variant tool-error {
+    invalid-parameters(string),
+    execution-error(string),
+    schema-error(string),
+    not-found(string),
+  }
+
+  /// Resource-level errors.
+  variant resource-error {
+    execution-error(string),
+    not-found(string),
+  }
+
+  /// Prompt-level errors.
+  variant prompt-error {
+    invalid-parameters(string),
+    internal-error(string),
+    not-found(string),
+  }
+
+  /// Completion-level errors.
+  variant completion-error {
+    invalid-parameters(string),
+    execution-error(string),
+    schema-error(string),
+    not-found(string),
+  }
+
+  record prompt {
+    name: string,
+    description: option<string>,
+    arguments: option<list<prompt-argument>>,
+  }
+
+  record prompt-argument {
+    name: string,
+    description: option<string>,
+    required: option<bool>,
+  }
+
+  record get-prompt-result {
+    description: option<string>,
+    messages: list<prompt-message>,
+  }
+
+  record prompt-message {
+    role: prompt-message-role,
+    content: prompt-message-content,
+  }
+
+  enum prompt-message-role {
+    user,
+    assistant,
+  }
+
+  variant prompt-message-content {
+    text(text-content),
+    image(image-content),
+    mcp-resource(embedded-resource),
+  }
+
+  /// Completion request payload.
+  record completion-request {
+    input: value,
+    streaming: option<bool>,
+    meta: option<list<meta-entry>>,
+  }
+
+  /// Completion response payload.
+  record completion-response {
+    content: list<content>,
+    meta: option<list<meta-entry>>,
+    is-error: option<bool>,
+  }
+
+  /// Human-readable router name.
+  name: func() -> string;
+  /// Router instructions/overview.
+  instructions: func() -> string;
+  /// Advertised capabilities.
+  capabilities: func() -> server-capabilities;
+  /// List available tools.
+  list-tools: func() -> list<tool>;
+  /// Invoke a tool.
+  call-tool: func(tool-name: string, arguments: value) -> result<call-tool-result, tool-error>;
+  /// Discover server resources.
+  list-resources: func() -> list<mcp-resource>;
+  /// Fetch resource contents.
+  read-resource: func(uri: string) -> result<read-resource-result, resource-error>;
+  /// List prompts.
+  list-prompts: func() -> list<prompt>;
+  /// Fetch a prompt by name.
+  get-prompt: func(prompt-name: string) -> result<get-prompt-result, prompt-error>;
+  /// Request a completion.
+  complete: func(request: completion-request) -> result<completion-response, completion-error>;
+}
+
+world mcp-router {
+  export router;
+}

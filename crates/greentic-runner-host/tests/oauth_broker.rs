@@ -10,6 +10,7 @@ use greentic_runner_host::pack::{ComponentState, HostState};
 use greentic_runner_host::runtime_wasmtime::{Component, Engine, Linker, Store};
 use greentic_runner_host::secrets::default_manager;
 use greentic_runner_host::wasi::RunnerWasiPolicy;
+use reqwest::blocking::Client as BlockingClient;
 use tempfile::NamedTempFile;
 
 #[test]
@@ -25,6 +26,7 @@ fn instantiate_component(wasm: &Path, config: Arc<HostConfig>, oauth_enabled: bo
         .with_context(|| format!("failed to load {}", wasm.display()))?;
     let host_state = HostState::new(
         Arc::clone(&config),
+        Arc::new(BlockingClient::builder().build()?),
         None,
         None,
         None,

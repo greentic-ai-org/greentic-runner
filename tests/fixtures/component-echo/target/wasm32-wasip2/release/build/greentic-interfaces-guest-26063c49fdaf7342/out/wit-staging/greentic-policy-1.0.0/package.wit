@@ -1,0 +1,47 @@
+// SPDX-License-Identifier: MIT
+
+package greentic:policy@1.0.0;
+
+interface policy-api {
+  use greentic:interfaces-types/types@0.1.0.{tenant-ctx};
+
+  /// Canonical host error payload.
+  record host-error {
+    code: string,
+    message: string,
+  }
+
+  /// Policy reference.
+  record policy-ref {
+    id: string,
+    version: option<string>,
+    uri: option<string>,
+    extra: option<string>,
+  }
+
+  /// Policy input reference.
+  record policy-input-ref {
+    id: string,
+    uri: option<string>,
+    kind: option<string>,
+    extra: option<string>,
+  }
+
+  /// Policy decision result.
+  enum policy-status {
+    allow,
+    deny,
+  }
+
+  record policy-decision {
+    status: policy-status,
+    reasons: list<string>,
+    extra: option<string>,
+  }
+
+  evaluate: func(ctx: tenant-ctx, policy: policy-ref, input: policy-input-ref) -> result<policy-decision, host-error>;
+}
+
+world policy-evaluator {
+  export policy-api;
+}

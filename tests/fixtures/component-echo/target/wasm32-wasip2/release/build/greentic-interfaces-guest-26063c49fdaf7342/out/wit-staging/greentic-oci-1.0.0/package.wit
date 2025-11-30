@@ -1,0 +1,38 @@
+// SPDX-License-Identifier: MIT
+
+package greentic:oci@1.0.0;
+
+interface oci-api {
+  use greentic:interfaces-types/types@0.1.0.{tenant-ctx};
+
+  /// Canonical host error payload.
+  record host-error {
+    code: string,
+    message: string,
+  }
+
+  /// Registry reference.
+  record registry-ref {
+    registry: string,
+    extra: option<string>,
+  }
+
+  /// OCI image reference.
+  record oci-image-ref {
+    reference: string,
+    digest: option<string>,
+    tag: option<string>,
+    extra: option<string>,
+  }
+
+  /// Trivial acknowledgment for pushes.
+  enum op-ack { ok }
+
+  push: func(ctx: tenant-ctx, image: oci-image-ref, registry: registry-ref) -> result<op-ack, host-error>;
+
+  get-pull-reference: func(ctx: tenant-ctx, image: oci-image-ref, registry: registry-ref) -> result<string, host-error>;
+}
+
+world oci-distribution {
+  export oci-api;
+}

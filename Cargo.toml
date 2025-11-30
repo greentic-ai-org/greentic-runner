@@ -9,12 +9,15 @@ members = [
 resolver = "2"
 exclude = [
     "tests/fixtures/oauth-broker-component",
+    "tests/fixtures/component-echo",
+    "tests/fixtures/runner-components",
+    "tests/fixtures/wasi-p2-smoke",
 ]
 
 [workspace.package]
 edition = "2024"
 license = "MIT"
-version = "0.4.2"
+version = "0.4.4"
 
 [workspace.dependencies]
 arc-swap = "1.7"
@@ -27,7 +30,6 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 ed25519-dalek = { version = "2", features = ["pkcs8"] }
 futures = "0.3"
 greentic-flow = "0.4"
-greentic_mcp = { package = "mcp-exec", version = "0.4" }
 greentic-types = { version = "0.4", features = ["telemetry-autoinit"] }
 greentic-pack = { version = "0.4" }
 greentic-session = "0.4"
@@ -61,7 +63,6 @@ tower = "0.5"
 tracing = "0.1"
 wasmparser = "0.242"
 cron = "0.15"
-handlebars = "6"
 uuid = { version = "1", features = ["v4"] }
 url = "2"
 zip = { version = "6", default-features = false, features = ["deflate"] }

@@ -1,29 +1,25 @@
+use crate::oauth::OAuthBrokerConfig;
+use crate::runner::mocks::MocksConfig;
+use anyhow::{Context, Result};
+use serde::Deserialize;
+use serde_yaml_bw as serde_yaml;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
-#[cfg(feature = "mcp")]
-use std::time::Duration;
-
-use crate::oauth::OAuthBrokerConfig;
-use anyhow::{Context, Result};
-#[cfg(feature = "mcp")]
-use greentic_mcp::{ExecConfig, RuntimePolicy, ToolStore, VerifyPolicy};
-use serde::Deserialize;
-use serde_yaml_bw as serde_yaml;
-use std::env;
 
 #[derive(Debug, Clone)]
 pub struct HostConfig {
     pub tenant: String,
     pub bindings_path: PathBuf,
     pub flow_type_bindings: HashMap<String, FlowBinding>,
-    pub mcp: McpConfig,
     pub rate_limits: RateLimits,
+    pub retry: FlowRetryConfig,
     pub http_enabled: bool,
     pub secrets_policy: SecretsPolicy,
     pub webhook_policy: WebhookPolicy,
     pub timers: Vec<TimerBinding>,
     pub oauth: Option<OAuthConfig>,
+    pub mocks: Option<MocksConfig>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -31,13 +27,16 @@ pub struct BindingsFile {
     pub tenant: String,
     #[serde(default)]
     pub flow_type_bindings: HashMap<String, FlowBinding>,
-    pub mcp: McpConfig,
     #[serde(default)]
     pub rate_limits: RateLimits,
+    #[serde(default)]
+    pub retry: FlowRetryConfig,
     #[serde(default)]
     pub timers: Vec<TimerBinding>,
     #[serde(default)]
     pub oauth: Option<OAuthConfig>,
+    #[serde(default)]
+    pub mocks: Option<MocksConfig>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -47,19 +46,6 @@ pub struct FlowBinding {
     pub config: serde_yaml::Value,
     #[serde(default)]
     pub secrets: Vec<String>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct McpConfig {
-    pub store: serde_yaml::Value,
-    #[serde(default)]
-    pub security: serde_yaml::Value,
-    #[serde(default)]
-    pub runtime: serde_yaml::Value,
-    #[serde(default)]
-    pub http_enabled: Option<bool>,
-    #[serde(default)]
-    pub retry: Option<McpRetryConfig>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -77,10 +63,10 @@ pub struct SecretsPolicy {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub struct McpRetryConfig {
-    #[serde(default = "default_mcp_retry_attempts")]
+pub struct FlowRetryConfig {
+    #[serde(default = "default_retry_attempts")]
     pub max_attempts: u32,
-    #[serde(default = "default_mcp_retry_base_delay_ms")]
+    #[serde(default = "default_retry_base_delay_ms")]
     pub base_delay_ms: u64,
 }
 
@@ -126,10 +112,7 @@ impl HostConfig {
             .with_context(|| format!("failed to parse bindings file {path:?}"))?;
 
         let secrets_policy = SecretsPolicy::from_bindings(&bindings);
-        let http_enabled = bindings
-            .mcp
-            .http_enabled
-            .unwrap_or(bindings.flow_type_bindings.contains_key("messaging"));
+        let http_enabled = bindings.flow_type_bindings.contains_key("messaging");
         let webhook_policy = bindings
             .flow_type_bindings
             .get("webhook")
@@ -148,13 +131,14 @@ impl HostConfig {
             tenant: bindings.tenant.clone(),
             bindings_path: path.to_path_buf(),
             flow_type_bindings: bindings.flow_type_bindings.clone(),
-            mcp: bindings.mcp.clone(),
             rate_limits: bindings.rate_limits.clone(),
+            retry: bindings.retry.clone(),
             http_enabled,
             secrets_policy,
             webhook_policy,
             timers: bindings.timers.clone(),
             oauth: bindings.oauth.clone(),
+            mocks: bindings.mocks.clone(),
         })
     }
 
@@ -162,15 +146,8 @@ impl HostConfig {
         self.flow_type_bindings.get("messaging")
     }
 
-    pub fn mcp_retry_config(&self) -> McpRetryConfig {
-        self.mcp.retry.clone().unwrap_or_default()
-    }
-
-    #[cfg(feature = "mcp")]
-    pub fn mcp_exec_config(&self) -> Result<ExecConfig> {
-        self.mcp
-            .to_exec_config(self.bindings_path.parent())
-            .context("failed to build MCP exec configuration")
+    pub fn retry_config(&self) -> FlowRetryConfig {
+        self.retry.clone()
     }
 
     pub fn oauth_broker_config(&self) -> Option<OAuthBrokerConfig> {
@@ -209,17 +186,6 @@ impl SecretsPolicy {
         Self {
             allowed: HashSet::new(),
             allow_all: true,
-        }
-    }
-
-    pub fn from_allowed<I, S>(iter: I) -> Self
-    where
-        I: IntoIterator<Item = S>,
-        S: Into<String>,
-    {
-        Self {
-            allowed: iter.into_iter().map(Into::into).collect(),
-            allow_all: false,
         }
     }
 }
@@ -276,10 +242,27 @@ impl TimerBinding {
     }
 }
 
+impl Default for FlowRetryConfig {
+    fn default() -> Self {
+        Self {
+            max_attempts: default_retry_attempts(),
+            base_delay_ms: default_retry_base_delay_ms(),
+        }
+    }
+}
+
+fn default_retry_attempts() -> u32 {
+    3
+}
+
+fn default_retry_base_delay_ms() -> u64 {
+    250
+}
+
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod tests {
     use super::*;
-    use serde_yaml::Value;
     use std::collections::HashMap;
     use std::path::PathBuf;
 
@@ -288,19 +271,14 @@ mod tests {
             tenant: "tenant-a".to_string(),
             bindings_path: PathBuf::from("/tmp/bindings.yaml"),
             flow_type_bindings: HashMap::new(),
-            mcp: McpConfig {
-                store: Value::Null(None),
-                security: Value::Null(None),
-                runtime: Value::Null(None),
-                http_enabled: Some(false),
-                retry: None,
-            },
             rate_limits: RateLimits::default(),
+            retry: FlowRetryConfig::default(),
             http_enabled: false,
             secrets_policy: SecretsPolicy::allow_all(),
             webhook_policy: WebhookPolicy::default(),
             timers: Vec::new(),
             oauth,
+            mocks: None,
         }
     }
 
@@ -324,145 +302,5 @@ mod tests {
         assert_eq!(broker.nats_url, "nats://broker:4222");
         assert_eq!(broker.default_provider.as_deref(), Some("demo"));
         assert_eq!(broker.team.as_deref(), Some("ops"));
-    }
-}
-
-#[cfg(feature = "mcp")]
-#[derive(Debug, Deserialize)]
-#[serde(tag = "kind", rename_all = "kebab-case")]
-enum StoreBinding {
-    #[serde(rename = "http-single")]
-    HttpSingle {
-        name: String,
-        url: String,
-        #[serde(default)]
-        cache_dir: Option<String>,
-    },
-    #[serde(rename = "local-dir")]
-    LocalDir { path: String },
-}
-
-#[cfg(feature = "mcp")]
-#[derive(Debug, Default, Deserialize)]
-struct RuntimeBinding {
-    #[serde(default)]
-    max_memory_mb: Option<u64>,
-    #[serde(default)]
-    timeout_ms: Option<u64>,
-    #[serde(default)]
-    fuel: Option<u64>,
-    #[serde(default)]
-    per_call_timeout_ms: Option<u64>,
-    #[serde(default)]
-    max_attempts: Option<u32>,
-    #[serde(default)]
-    base_backoff_ms: Option<u64>,
-}
-
-#[cfg(feature = "mcp")]
-#[derive(Debug, Default, Deserialize)]
-struct SecurityBinding {
-    #[serde(default)]
-    require_signature: bool,
-    #[serde(default)]
-    required_digests: HashMap<String, String>,
-    #[serde(default)]
-    trusted_signers: Vec<String>,
-}
-
-#[cfg(feature = "mcp")]
-impl McpConfig {
-    fn to_exec_config(&self, base_dir: Option<&Path>) -> Result<ExecConfig> {
-        let store_cfg: StoreBinding = serde_yaml::from_value(self.store.clone())
-            .context("invalid MCP store configuration")?;
-        let runtime_cfg: RuntimeBinding =
-            serde_yaml::from_value(self.runtime.clone()).unwrap_or_default();
-        let security_cfg: SecurityBinding =
-            serde_yaml::from_value(self.security.clone()).unwrap_or_default();
-
-        let store = match store_cfg {
-            StoreBinding::HttpSingle {
-                name,
-                url,
-                cache_dir,
-            } => ToolStore::HttpSingleFile {
-                name,
-                url,
-                cache_dir: resolve_optional_path(base_dir, cache_dir)
-                    .unwrap_or_else(|| default_cache_dir(base_dir)),
-            },
-            StoreBinding::LocalDir { path } => {
-                ToolStore::LocalDir(resolve_required_path(base_dir, path))
-            }
-        };
-
-        let runtime = RuntimePolicy {
-            fuel: runtime_cfg.fuel,
-            max_memory: runtime_cfg.max_memory_mb.map(|mb| mb * 1024 * 1024),
-            wallclock_timeout: Duration::from_millis(runtime_cfg.timeout_ms.unwrap_or(30_000)),
-            per_call_timeout: Duration::from_millis(
-                runtime_cfg.per_call_timeout_ms.unwrap_or(10_000),
-            ),
-            max_attempts: runtime_cfg.max_attempts.unwrap_or(1),
-            base_backoff: Duration::from_millis(runtime_cfg.base_backoff_ms.unwrap_or(100)),
-        };
-
-        let security = VerifyPolicy {
-            allow_unverified: !security_cfg.require_signature,
-            required_digests: security_cfg.required_digests,
-            trusted_signers: security_cfg.trusted_signers,
-        };
-
-        Ok(ExecConfig {
-            store,
-            security,
-            runtime,
-            http_enabled: self.http_enabled.unwrap_or(false),
-        })
-    }
-}
-
-impl Default for McpRetryConfig {
-    fn default() -> Self {
-        Self {
-            max_attempts: default_mcp_retry_attempts(),
-            base_delay_ms: default_mcp_retry_base_delay_ms(),
-        }
-    }
-}
-
-fn default_mcp_retry_attempts() -> u32 {
-    3
-}
-
-fn default_mcp_retry_base_delay_ms() -> u64 {
-    250
-}
-
-#[cfg(feature = "mcp")]
-fn resolve_required_path(base: Option<&Path>, value: String) -> PathBuf {
-    let candidate = PathBuf::from(&value);
-    if candidate.is_absolute() {
-        candidate
-    } else if let Some(base) = base {
-        base.join(candidate)
-    } else {
-        PathBuf::from(value)
-    }
-}
-
-#[cfg(feature = "mcp")]
-fn resolve_optional_path(base: Option<&Path>, value: Option<String>) -> Option<PathBuf> {
-    value.map(|v| resolve_required_path(base, v))
-}
-
-#[cfg(feature = "mcp")]
-fn default_cache_dir(base: Option<&Path>) -> PathBuf {
-    if let Some(dir) = env::var_os("GREENTIC_CACHE_DIR") {
-        PathBuf::from(dir)
-    } else if let Some(base) = base {
-        base.join(".greentic/tool-cache")
-    } else {
-        env::temp_dir().join("greentic-tool-cache")
     }
 }

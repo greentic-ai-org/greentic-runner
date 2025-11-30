@@ -1,0 +1,52 @@
+// SPDX-License-Identifier: MIT
+
+package greentic:metadata@1.0.0;
+
+interface metadata-api {
+  use greentic:interfaces-types/types@0.1.0.{tenant-ctx};
+
+  /// Canonical host error payload.
+  record host-error {
+    code: string,
+    message: string,
+  }
+
+  /// Component reference.
+  record component-ref {
+    id: string,
+    extra: option<string>,
+  }
+
+  /// Version reference.
+  record version-ref {
+    version: string,
+    extra: option<string>,
+  }
+
+  /// Metadata record reference.
+  record metadata-record-ref {
+    key: string,
+    value-json: string,
+    extra: option<string>,
+  }
+
+  /// Trivial acknowledgment for metadata writes.
+  enum op-ack { ok }
+
+  upsert-metadata: func(
+    ctx: tenant-ctx,
+    component: component-ref,
+    version: version-ref,
+    metadata: metadata-record-ref,
+  ) -> result<op-ack, host-error>;
+
+  query-metadata: func(
+    ctx: tenant-ctx,
+    component: component-ref,
+    version: version-ref,
+  ) -> result<list<metadata-record-ref>, host-error>;
+}
+
+world metadata-store {
+  export metadata-api;
+}

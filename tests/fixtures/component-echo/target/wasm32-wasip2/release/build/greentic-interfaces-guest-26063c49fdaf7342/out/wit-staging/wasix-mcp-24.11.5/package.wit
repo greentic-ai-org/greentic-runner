@@ -1,0 +1,216 @@
+package wasix:mcp@24.11.5;
+
+/// MCP router snapshot (2024-11-05 + Greentic additions for output/config/secrets descriptors).
+interface router {
+  /// Generic JSON value wrapper.
+  record value { json: string }
+
+  /// Optional config entries the router expects from the host.
+  record config-descriptor {
+    name: string,
+    description: string,
+    required: bool,
+  }
+
+  /// Optional secret entries the router expects from the host.
+  record secret-descriptor {
+    name: string,
+    description: string,
+    required: bool,
+  }
+
+  /// Tool descriptor.
+  record tool {
+    name: string,
+    description: string,
+    input-schema: value,
+    /// Optional schema for structured output.
+    output-schema: option<value>,
+    /// Legacy ad-hoc output hint (kept for compatibility).
+    output: option<string>,
+    /// Host-facing config descriptors (legacy surface).
+    config: option<list<config-descriptor>>,
+    /// Host-facing secret descriptors (legacy surface).
+    secrets: option<list<secret-descriptor>>,
+  }
+
+  /// Prompts capability (list_changed field).
+  record prompts-capability {
+    list-changed: option<bool>,
+  }
+
+  /// Resources capability (subscribe and list_changed fields).
+  record resources-capability {
+    subscribe: option<bool>,
+    list-changed: option<bool>,
+  }
+
+  /// Tools capability (list_changed field).
+  record tools-capability {
+    list-changed: option<bool>,
+  }
+
+  /// Server-wide capabilities.
+  record server-capabilities {
+    prompts: option<prompts-capability>,
+    resources: option<resources-capability>,
+    tools: option<tools-capability>,
+  }
+
+  /// Tool invocation result.
+  record call-tool-result {
+    content: list<content>,
+    /// Optional legacy output blob/hint.
+    output: option<string>,
+    is-error: option<bool>,
+  }
+
+  /// Content variants supported by the router.
+  variant content {
+    text(text-content),
+    image(image-content),
+    embedded(embedded-resource),
+  }
+
+  record text-content {
+    text: string,
+    annotations: option<annotations>,
+  }
+
+  record image-content {
+    data: string,
+    mime-type: string,
+    annotations: option<annotations>,
+  }
+
+  record embedded-resource {
+    resource-contents: resource-contents,
+    annotations: option<annotations>,
+  }
+
+  record mcp-resource {
+    uri: string,
+    name: string,
+    description: option<string>,
+    mime-type: string,
+    annotations: option<annotations>,
+  }
+
+  record text-resource-contents {
+    uri: string,
+    mime-type: option<string>,
+    text: string,
+  }
+
+  record blob-resource-contents {
+    uri: string,
+    mime-type: option<string>,
+    blob: string,
+  }
+
+  /// Text or binary resource payload.
+  variant resource-contents {
+    text(text-resource-contents),
+    blob(blob-resource-contents),
+  }
+
+  record read-resource-result {
+    contents: list<resource-contents>,
+  }
+
+  /// Optional annotations for content or resources.
+  record annotations {
+    audience: option<list<role>>,
+    priority: option<f32>,
+    timestamp: option<datetime>,
+  }
+
+  enum role {
+    user,
+    assistant,
+  }
+
+  /// UTC datetime encoded as string for legacy compatibility.
+  type datetime = string;
+
+  /// Tool-level errors.
+  variant tool-error {
+    invalid-parameters(string),
+    execution-error(string),
+    schema-error(string),
+    not-found(string),
+  }
+
+  /// Resource-level errors.
+  variant resource-error {
+    execution-error(string),
+    not-found(string),
+  }
+
+  /// Prompt-level errors.
+  variant prompt-error {
+    invalid-parameters(string),
+    internal-error(string),
+    not-found(string),
+  }
+
+  record prompt {
+    name: string,
+    description: option<string>,
+    arguments: option<list<prompt-argument>>,
+  }
+
+  record prompt-argument {
+    name: string,
+    description: option<string>,
+    required: option<bool>,
+  }
+
+  record get-prompt-result {
+    description: option<string>,
+    messages: list<prompt-message>,
+  }
+
+  record prompt-message {
+    role: prompt-message-role,
+    content: prompt-message-content,
+  }
+
+  enum prompt-message-role {
+    user,
+    assistant,
+  }
+
+  variant prompt-message-content {
+    text(text-content),
+    image(image-content),
+    mcp-resource(embedded-resource),
+  }
+
+  /// Human-readable router name.
+  name: func() -> string;
+  /// Router instructions/overview.
+  instructions: func() -> string;
+  /// Advertised capabilities.
+  capabilities: func() -> server-capabilities;
+  /// List available tools.
+  list-tools: func() -> list<tool>;
+  /// Invoke a tool.
+  call-tool: func(tool-name: string, arguments: value) -> result<call-tool-result, tool-error>;
+  /// Discover server resources.
+  list-resources: func() -> list<mcp-resource>;
+  /// Fetch resource contents.
+  read-resource: func(uri: string) -> result<read-resource-result, resource-error>;
+  /// List prompts.
+  list-prompts: func() -> list<prompt>;
+  /// Fetch a prompt by name.
+  get-prompt: func(prompt-name: string) -> result<get-prompt-result, prompt-error>;
+  /// Legacy config descriptors.
+  list-config: func() -> list<config-descriptor>;
+  /// Legacy secret descriptors.
+  list-secrets: func() -> list<secret-descriptor>;
+}
+
+world mcp-router {
+  export router;
+}

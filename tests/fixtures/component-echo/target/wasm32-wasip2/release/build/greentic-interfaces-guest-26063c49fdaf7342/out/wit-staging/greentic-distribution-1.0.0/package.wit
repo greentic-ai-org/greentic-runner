@@ -1,0 +1,61 @@
+// SPDX-License-Identifier: MIT
+
+package greentic:distribution@1.0.0;
+
+interface distribution-api {
+  use greentic:interfaces-types/types@0.1.0.{tenant-ctx};
+
+  /// Opaque metadata preserved end-to-end.
+  record metadata-entry {
+    key: string,
+    value: string,
+  }
+
+  /// Reference to a distributor-managed environment.
+  record environment-ref {
+    id: string,
+    alias: option<string>,
+    distributor-ref: option<string>,
+    connection-kind: option<string>,
+    labels: list<metadata-entry>,
+  }
+
+  /// Opaque desired state handle.
+  type desired-state-ref = string;
+
+  /// Desired state version marker (opaque string to the ABI).
+  type desired-state-version = string;
+
+  /// Captured desired state payload for an environment.
+  record desired-state {
+    ref: desired-state-ref,
+    environment: environment-ref,
+    version: desired-state-version,
+    payload-json: string,
+    metadata: list<metadata-entry>,
+  }
+
+  /// Canonical host error payload.
+  record host-error {
+    code: string,
+    message: string,
+  }
+
+  /// Submit a desired state payload for an environment.
+  submit-desired-state: func(
+    tenant: tenant-ctx,
+    environment: environment-ref,
+    payload-json: string,
+    metadata: list<metadata-entry>
+  ) -> result<desired-state-ref, host-error>;
+
+  /// Fetch a desired state by reference.
+  get-desired-state: func(
+    tenant: tenant-ctx,
+    state: desired-state-ref
+  ) -> result<desired-state, host-error>;
+}
+
+world distribution {
+  export distribution-api;
+}

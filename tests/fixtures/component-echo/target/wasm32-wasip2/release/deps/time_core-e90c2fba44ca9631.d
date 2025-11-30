@@ -1,0 +1,10 @@
+/Users/maarten/Documents/GitHub/agentic/greentic-runner/tests/fixtures/component-echo/target/wasm32-wasip2/release/deps/time_core-e90c2fba44ca9631.d: /Users/maarten/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/time-core-0.1.6/src/lib.rs /Users/maarten/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/time-core-0.1.6/src/convert.rs /Users/maarten/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/time-core-0.1.6/src/hint.rs /Users/maarten/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/time-core-0.1.6/src/util.rs
+
+/Users/maarten/Documents/GitHub/agentic/greentic-runner/tests/fixtures/component-echo/target/wasm32-wasip2/release/deps/libtime_core-e90c2fba44ca9631.rlib: /Users/maarten/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/time-core-0.1.6/src/lib.rs /Users/maarten/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/time-core-0.1.6/src/convert.rs /Users/maarten/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/time-core-0.1.6/src/hint.rs /Users/maarten/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/time-core-0.1.6/src/util.rs
+
+/Users/maarten/Documents/GitHub/agentic/greentic-runner/tests/fixtures/component-echo/target/wasm32-wasip2/release/deps/libtime_core-e90c2fba44ca9631.rmeta: /Users/maarten/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/time-core-0.1.6/src/lib.rs /Users/maarten/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/time-core-0.1.6/src/convert.rs /Users/maarten/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/time-core-0.1.6/src/hint.rs /Users/maarten/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/time-core-0.1.6/src/util.rs
+
+/Users/maarten/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/time-core-0.1.6/src/lib.rs:
+/Users/maarten/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/time-core-0.1.6/src/convert.rs:
+/Users/maarten/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/time-core-0.1.6/src/hint.rs:
+/Users/maarten/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/time-core-0.1.6/src/util.rs:

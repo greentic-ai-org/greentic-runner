@@ -1,0 +1,35 @@
+// SPDX-License-Identifier: MIT
+
+package greentic:repo-ui-actions@1.0.0;
+
+interface ui-action-api {
+  /// Identifier for page slot (UI-provided string).
+  type page-id = string;
+
+  /// Identifier for action within a page slot.
+  type action-id = string;
+
+  /// JSON payload container supplied by the UI.
+  record action-input {
+    payload: string,
+  }
+
+  /// Outcome of an action invocation.
+  record action-result {
+    success: bool,
+    message: string,
+    payload: option<string>,
+  }
+
+  /// Execute a UI-triggered action for the given tenant + page slot.
+  handle-action: func(
+    tenant: string,
+    page: page-id,
+    action: action-id,
+    input: action-input,
+  ) -> action-result;
+}
+
+world repo-ui-worker {
+  export ui-action-api;
+}

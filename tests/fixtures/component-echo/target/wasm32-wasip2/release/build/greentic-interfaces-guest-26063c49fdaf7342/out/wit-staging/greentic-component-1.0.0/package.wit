@@ -1,0 +1,13 @@
+// SPDX-License-Identifier: MIT
+
+package greentic:component@1.0.0;
+
+/// Describe-only interface so runners can fetch schemas without matching the full component layout.
+interface describe-v1 {
+  /// Returns a JSON string: { name, versions:[{version, schema, defaults?}], schema_id? }
+  describe-json: func() -> string;
+}
+
+world component {
+  export describe-v1;
+}

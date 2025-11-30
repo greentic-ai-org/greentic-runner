@@ -1,0 +1,26 @@
+// SPDX-License-Identifier: MIT
+
+package greentic:telemetry@1.0.0;
+
+interface logger-api {
+  use greentic:interfaces-types/types@0.1.0.{tenant-ctx, span-context};
+
+  /// Canonical host error payload.
+  record host-error {
+    code: string,
+    message: string,
+  }
+
+  enum op-ack { ok }
+
+  /// Emits telemetry fields under the provided span context.
+  log: func(
+    span: span-context,
+    fields: list<tuple<string, string>>,
+    ctx: option<tenant-ctx>
+  ) -> result<op-ack, host-error>;
+}
+
+world logger {
+  import logger-api;
+}

@@ -1,0 +1,136 @@
+// SPDX-License-Identifier: MIT
+
+package greentic:events@1.0.0;
+
+interface event-types {
+  use greentic:interfaces-types/types@0.1.0.{tenant-ctx};
+
+  /// Metadata entries preserved end-to-end.
+  type metadata-entry = tuple<string, string>;
+
+  /// Canonical event envelope shared across providers.
+  record event-envelope {
+    id: string,
+    topic: string,
+    %type: string,
+    source: string,
+    tenant: tenant-ctx,
+    subject: option<string>,
+    /// RFC3339 UTC timestamp.
+    time: string,
+    correlation-id: option<string>,
+    /// JSON payload (opaque to the ABI).
+    payload-json: string,
+    metadata: list<metadata-entry>,
+  }
+
+  /// Subscription tuning knobs.
+  record subscription-options {
+    durable: bool,
+    deliver-existing: bool,
+    ack-mode: ack-mode,
+  }
+
+  /// A registered subscription handle.
+  type subscription-id = string;
+
+  /// Source configuration (topic filters, cursor, tenant).
+  record source-config {
+    topics: list<string>,
+    tenant: option<tenant-ctx>,
+    cursor: option<string>,
+  }
+
+  /// Sink configuration (target topic plus optional tenant override).
+  record sink-config {
+    topic: string,
+    tenant: option<tenant-ctx>,
+  }
+
+  /// Delivery outcome classification.
+  enum delivery-status {
+    ok,
+    retryable-failure,
+    permanent-failure,
+  }
+
+  /// Delivery result describing the status and optional error.
+  record delivery-result {
+    status: delivery-status,
+    error-code: option<string>,
+    error-message: option<string>,
+  }
+
+  /// Ack behaviour for pull-based subscriptions.
+  enum ack-mode {
+    auto,
+    manual,
+  }
+
+  /// Canonical host error payload.
+  record host-error {
+    code: string,
+    message: string,
+  }
+
+  /// Trivial acknowledgment for operations.
+  enum op-ack { ok }
+}
+
+/// Pull-based broker interface (subscribe + next-event).
+interface broker-api {
+  use event-types.{event-envelope, subscription-id, subscription-options, host-error};
+  use event-types.{op-ack};
+
+  publish: func(event: event-envelope) -> result<op-ack, host-error>;
+  subscribe: func(topic: string, opts: subscription-options) -> result<subscription-id, host-error>;
+  next-event: func(sub: subscription-id, timeout-ms: u64) -> result<option<event-envelope>, host-error>;
+  ack-event: func(sub: subscription-id, event-id: string) -> result<op-ack, host-error>;
+}
+
+/// Pull-based source interface for provider-originated events.
+interface source-api {
+  use event-types.{event-envelope, source-config, subscription-id, host-error};
+
+  start-source: func(config: source-config) -> result<subscription-id, host-error>;
+  next-event: func(source: subscription-id, timeout-ms: u64) -> result<option<event-envelope>, host-error>;
+}
+
+/// Sink interface for delivering events to an external transport.
+interface sink-api {
+  use event-types.{delivery-result, event-envelope, sink-config, host-error};
+
+  deliver: func(event: event-envelope, config: sink-config) -> result<delivery-result, host-error>;
+}
+
+/// Back-compat telemetry envelope world.
+interface events-v1 {
+  /// Envelope shared by runner telemetry streams.
+  record envelope {
+    id: string,
+    created-at-utc: string,
+    tenant-id: string,
+    flow-id: string,
+    node-id: string,
+    /// "start"|"end"|"error"|"log"|"mock"
+    kind: string,
+    /// Redacted JSON payload.
+    payload-json: string,
+  }
+}
+
+world events {
+  export events-v1;
+}
+
+world broker {
+  export broker-api;
+}
+
+world source {
+  export source-api;
+}
+
+world sink {
+  export sink-api;
+}

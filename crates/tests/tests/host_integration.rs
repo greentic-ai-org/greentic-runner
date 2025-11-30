@@ -22,7 +22,7 @@ async fn host_executes_demo_pack_flow() -> Result<()> {
     let host = HostBuilder::new().with_config(config).build()?;
     host.start().await?;
 
-    let pack_path = fixture_path("examples/packs/demo.gtpack");
+    let pack_path = fixture_path("tests/fixtures/packs/runner-components/runner-components.gtpack");
     host.load_pack("acme", pack_path.as_path()).await?;
 
     let activity = Activity::text("hello from integration")

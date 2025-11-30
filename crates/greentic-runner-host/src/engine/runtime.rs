@@ -467,7 +467,7 @@ impl Adapter for PackFlowAdapter {
             .unwrap_or_else(|| envelope.canonical_session_hint());
         let provider_owned = envelope.provider.clone();
         let payload = envelope.payload.clone();
-        let retry_config = self.config.mcp_retry_config().into();
+        let retry_config = self.config.retry_config().into();
 
         let mocks = self.mocks.as_deref();
         let ctx = FlowContext {

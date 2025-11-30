@@ -14,7 +14,6 @@ categories = ["asynchronous", "api-bindings", "command-line-utilities"]
 default = ["verify"]
 telemetry = ["dep:greentic-telemetry"]
 verify = []
-mcp = ["dep:greentic_mcp"]
 
 [dependencies]
 async-trait.workspace = true
@@ -33,7 +32,6 @@ greentic-types.workspace = true
 greentic-session.workspace = true
 greentic-state.workspace = true
 greentic-secrets.workspace = true
-handlebars.workspace = true
 hex.workspace = true
 humantime.workspace = true
 indexmap.workspace = true
@@ -59,9 +57,9 @@ bytes.workspace = true
 futures.workspace = true
 hmac.workspace = true
 sha1.workspace = true
+once_cell.workspace = true
 
 # External stack components
-greentic_mcp = { workspace = true, optional = true }
 wasmtime = { workspace = true }
 wasmtime-wasi = { workspace = true }
 greentic-telemetry = { workspace = true, optional = true }
@@ -69,3 +67,4 @@ greentic-telemetry = { workspace = true, optional = true }
 [dev-dependencies]
 serial_test.workspace = true
 tempfile.workspace = true
+once_cell.workspace = true

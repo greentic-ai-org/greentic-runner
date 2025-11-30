@@ -1,0 +1,50 @@
+// SPDX-License-Identifier: MIT
+
+package greentic:attestation@1.0.0;
+
+interface attester-api {
+  use greentic:interfaces-types/types@0.1.0.{tenant-ctx};
+
+  /// Canonical host error payload.
+  record host-error {
+    code: string,
+    message: string,
+  }
+
+  /// Attestation identifier.
+  record attestation-id {
+    id: string,
+    extra: option<string>,
+  }
+
+  /// Predicate type descriptor.
+  record predicate-type {
+    kind: string,
+    extra: option<string>,
+  }
+
+  /// Statement reference (opaque to ABI).
+  record statement-ref {
+    uri: string,
+    digest: option<string>,
+    extra: option<string>,
+  }
+
+  /// Subject associated with the attestation.
+  record subject-ref {
+    id: string,
+    extra: option<string>,
+  }
+
+  generate-attestation: func(
+    ctx: tenant-ctx,
+    subject: subject-ref,
+    predicate: predicate-type,
+    statement: statement-ref,
+    extra: option<string>,
+  ) -> result<attestation-id, host-error>;
+}
+
+world attester {
+  export attester-api;
+}

@@ -1,0 +1,72 @@
+// SPDX-License-Identifier: MIT
+
+package greentic:build@1.0.0;
+
+interface builder-api {
+  use greentic:interfaces-types/types@0.1.0.{tenant-ctx};
+
+  /// Canonical host error payload.
+  record host-error {
+    code: string,
+    message: string,
+  }
+
+  /// Environment variable entry.
+  record env-var {
+    key: string,
+    value: string,
+  }
+
+  /// Artifact reference produced by builds.
+  record artifact-ref {
+    id: string,
+    uri: option<string>,
+    digest: option<string>,
+    extra: option<string>,
+  }
+
+  /// Build log reference.
+  record build-log-ref {
+    id: string,
+    uri: option<string>,
+    extra: option<string>,
+  }
+
+  /// Plan describing how to build a component.
+  record build-plan {
+    build-id: string,
+    language: option<string>,
+    entrypoint: option<string>,
+    env: list<env-var>,
+    outputs: list<artifact-ref>,
+    extra: option<string>,
+  }
+
+  /// Build lifecycle state.
+  enum build-state {
+    queued,
+    running,
+    succeeded,
+    failed,
+    cancelled,
+  }
+
+  /// Current status of a build execution.
+  record build-status {
+    build-id: string,
+    state: build-state,
+    started-at-utc: option<string>,
+    finished-at-utc: option<string>,
+    artifacts: list<artifact-ref>,
+    logs: list<build-log-ref>,
+    extra: option<string>,
+  }
+
+  execute-build: func(ctx: tenant-ctx, plan: build-plan) -> result<build-status, host-error>;
+
+  get-build-logs: func(ctx: tenant-ctx, status: build-status) -> result<list<build-log-ref>, host-error>;
+}
+
+world builder {
+  export builder-api;
+}

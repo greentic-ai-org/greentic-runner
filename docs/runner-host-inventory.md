@@ -48,16 +48,14 @@ secrets are wired today.
   - Public types such as `Activity`, `ActivityKind`, `HostConfig`, `HostServer`,
     `PreopenSpec`, and `RunnerWasiPolicy` are re-exported for downstream use.
 - **Features** – `verify` (default) enforces pack file presence and optional
-  signatures/digests, `mcp` enables the `mcp-exec` bridge, `telemetry` wires OTLP
-  exporters via `greentic-telemetry`.
+  signatures/digests, `telemetry` wires OTLP exporters via
+  `greentic-telemetry`. (The legacy `mcp` bridge feature has been removed;
+  MCP components are expected to be pre-composed and invoked via `component.exec`.)
 - **Tenant bindings (`HostConfig::load_from_path`)**
   - Each YAML file declares `tenant`, `flow_type_bindings` (map of flow kinds to
     adapter ID + adapter config + allowed secret names), optional `rate_limits`,
-    `timers`, an `mcp` block, and optionally an `oauth` block.
-  - `McpConfig` holds the MCP store (`http-single` with `cache_dir` or
-    `local-dir`), `runtime` caps (fuel, memory, wallclock/per-call timeouts,
-    attempts/backoff), `security` (required digests, trusted signers,
-    `require_signature`), HTTP enablement hints, and retry policy.
+    `timers`, `retry` policy, and optionally an `oauth` block. (No `mcp` block
+    in the new model.)
   - The optional `oauth` block enables the Greentic OAuth broker integration:
     ```yaml
     oauth:

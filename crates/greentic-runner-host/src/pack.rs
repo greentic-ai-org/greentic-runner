@@ -986,10 +986,7 @@ impl PackRuntime {
                 .iter()
                 .find(|f| f.id == flow_id)
                 .ok_or_else(|| anyhow!("flow '{flow_id}' not found in manifest"))?;
-            let archive_path = self
-                .archive_path
-                .as_ref()
-                .unwrap_or(&self.path);
+            let archive_path = self.archive_path.as_ref().unwrap_or(&self.path);
             let mut archive = ZipArchive::new(File::open(archive_path)?)?;
             match load_flow_doc(&mut archive, entry).and_then(|doc| {
                 greentic_flow::to_ir(doc.clone())

@@ -17,7 +17,7 @@ exclude = [
 [workspace.package]
 edition = "2024"
 license = "MIT"
-version = "0.4.4"
+version = "0.4.5"
 
 [workspace.dependencies]
 arc-swap = "1.7"
@@ -61,7 +61,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "rt", "signal"
 tokio-util = "0.7"
 tower = "0.5"
 tracing = "0.1"
-wasmparser = "0.242"
+wasmparser = "0.243"
 cron = "0.15"
 uuid = { version = "1", features = ["v4"] }
 url = "2"

@@ -327,9 +327,12 @@ async fn run_pack_async(pack_path: &Path, opts: RunOptions) -> Result<RunResult>
     let status = match execution {
         Ok(result) => match result.status {
             greentic_runner_host::runner::engine::FlowStatus::Completed => RunCompletion::Ok,
-            greentic_runner_host::runner::engine::FlowStatus::Waiting(wait) => RunCompletion::Err(
-                anyhow::anyhow!("flow paused unexpectedly: {:?}", wait.reason),
-            ),
+            greentic_runner_host::runner::engine::FlowStatus::Waiting(wait) => {
+                let reason = wait
+                    .reason
+                    .unwrap_or_else(|| "flow paused unexpectedly".to_string());
+                RunCompletion::Err(anyhow::anyhow!(reason))
+            }
         },
         Err(err) => RunCompletion::Err(err),
     };
@@ -521,6 +524,7 @@ pub struct RunResult {
     pub started_at_utc: String,
     pub finished_at_utc: String,
     pub status: RunStatus,
+    pub error: Option<String>,
     pub node_summaries: Vec<NodeSummary>,
     pub failures: BTreeMap<String, NodeFailure>,
     pub artifacts_dir: PathBuf,
@@ -610,8 +614,11 @@ impl RunRecorder {
             RunCompletion::Err(_) => RunStatus::Failure,
         };
 
+        let mut runtime_error = None;
         if let RunCompletion::Err(err) = completion {
             warn!(error = %err, "pack execution failed");
+            eprintln!("pack execution failed: {err}");
+            runtime_error = Some(err.to_string());
         }
 
         let started = started_at
@@ -664,6 +671,19 @@ impl RunRecorder {
             final_status = RunStatus::PartialFailure;
         }
 
+        if let Some(error) = &runtime_error {
+            failures.insert(
+                "_runtime".into(),
+                NodeFailure {
+                    code: "runtime-error".into(),
+                    message: error.clone(),
+                    details: json!({ "stage": "execute" }),
+                    transcript_offsets: (0, 0),
+                    log_paths: Vec::new(),
+                },
+            );
+        }
+
         let pack_meta = self.pack_meta.lock();
         let flow_id = self.flow_id.lock().clone();
         Ok(RunResult {
@@ -674,6 +694,7 @@ impl RunRecorder {
             started_at_utc: started,
             finished_at_utc: finished,
             status: final_status,
+            error: runtime_error,
             node_summaries: summaries,
             failures,
             artifacts_dir: self.directories.root.clone(),

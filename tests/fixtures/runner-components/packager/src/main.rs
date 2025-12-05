@@ -131,6 +131,8 @@ fn main() -> Result<()> {
         messaging: None,
         interfaces: Vec::new(),
         annotations: JsonMap::new(),
+        distribution: None,
+        components: Vec::new(),
     };
 
     let mut builder = PackBuilder::new(meta);

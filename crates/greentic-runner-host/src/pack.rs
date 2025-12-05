@@ -54,7 +54,10 @@ use wasmtime_wasi::{WasiCtx, WasiCtxView, WasiView};
 
 #[allow(dead_code)]
 pub struct PackRuntime {
+    /// Component artifact path (wasm file).
     path: PathBuf,
+    /// Optional archive (.gtpack) used to load flows/manifests.
+    archive_path: Option<PathBuf>,
     config: Arc<HostConfig>,
     engine: Engine,
     metadata: PackMetadata,
@@ -835,6 +838,7 @@ impl PackRuntime {
         let http_client = Arc::clone(&HTTP_CLIENT);
         Ok(Self {
             path: path.to_path_buf(),
+            archive_path: archive_hint.map(Path::to_path_buf),
             config,
             engine,
             metadata,
@@ -982,8 +986,11 @@ impl PackRuntime {
                 .iter()
                 .find(|f| f.id == flow_id)
                 .ok_or_else(|| anyhow!("flow '{flow_id}' not found in manifest"))?;
-            let path = &self.path;
-            let mut archive = ZipArchive::new(File::open(path)?)?;
+            let archive_path = self
+                .archive_path
+                .as_ref()
+                .unwrap_or(&self.path);
+            let mut archive = ZipArchive::new(File::open(archive_path)?)?;
             match load_flow_doc(&mut archive, entry).and_then(|doc| {
                 greentic_flow::to_ir(doc.clone())
                     .with_context(|| format!("failed to build IR for flow {}", doc.id))
@@ -1048,6 +1055,7 @@ impl PackRuntime {
 
         Ok(Self {
             path: PathBuf::new(),
+            archive_path: None,
             config,
             engine,
             metadata: PackMetadata::fallback(Path::new("component-test")),

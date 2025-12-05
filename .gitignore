@@ -1,6 +1,6 @@
 /target
 .cargo/
-
+.DS_Store
 # Fixture build outputs
 tests/fixtures/**/target/
 tests/fixtures/packs/runner-components/components/

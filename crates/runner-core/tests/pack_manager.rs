@@ -33,6 +33,8 @@ fn sample_meta() -> PackMeta {
         messaging: None,
         interfaces: Vec::new(),
         annotations: serde_json::Map::new(),
+        distribution: None,
+        components: Vec::new(),
     }
 }
 

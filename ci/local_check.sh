@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-: "${LOCAL_CHECK_ONLINE:=1}"
 : "${CI:=0}"
 : "${RUN_HOST:=never}"
 
@@ -10,13 +9,9 @@ export CARGO_TERM_COLOR=always
 export RUSTFLAGS="-Dwarnings"
 export CARGO_REGISTRIES_CRATES_IO_PROTOCOL=sparse
 
-ONLINE=${LOCAL_CHECK_ONLINE:-0}
-unset CARGO_NET_OFFLINE
-
-if [[ "$ONLINE" -eq 0 ]]; then
-  echo "==> Prefetching dependencies (cargo fetch --locked)"
-  cargo fetch --locked
-fi
+# If you *really* want to prefetch in CI, do it unconditionally here:
+# echo "==> Prefetching dependencies (cargo fetch --locked)"
+# cargo fetch --locked
 
 if [[ "${CI:-}" == "1" || "${CI:-}" == "true" ]]; then
   set -x

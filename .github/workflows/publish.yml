@@ -24,19 +24,33 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: dtolnay/rust-toolchain@nightly
         with:
           components: clippy, rustfmt
           targets: wasm32-wasip2
+
       - name: Install wasm32-wasip2 target
         run: rustup target add wasm32-wasip2 --toolchain nightly
+
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
+
+      # Optional but nice: explicit fetch to warm cache
+      - name: Cargo fetch
+        run: cargo fetch --locked
+
       - name: Run local_check
+        env:
+          CI: "1"
+          RUN_HOST: "never"
+          # Explicitly force ONLINE, in case of any future logic
+          CARGO_NET_OFFLINE: "false"
         run: |
           set -o pipefail
-          RUN_HOST=never CI=1 bash ci/local_check.sh 2>&1 | tee local_check.log
+          bash ci/local_check.sh 2>&1 | tee local_check.log
+
       - name: Upload local_check.log
         if: always()
         uses: actions/upload-artifact@v4
@@ -55,12 +69,18 @@ jobs:
           targets: wasm32-wasip2
       - name: Install wasm32-wasip2 target
         run: rustup target add wasm32-wasip2 --toolchain nightly
+
+      # optional fetch here too if needed
+      - name: Cargo fetch
+        run: cargo fetch --locked
+
       - name: Generate bindings (complete)
         run: |
           set -o pipefail
           mkdir -p artifacts
           cargo run -p greentic-runner --bin greentic-gen-bindings -- --pack tests/fixtures/gen-bindings/weather-demo --out artifacts/weather-demo.complete.yaml --complete
           cargo run -p greentic-runner --bin greentic-gen-bindings -- --pack tests/fixtures/gen-bindings/weather-demo-strict --out artifacts/weather-demo.strict.yaml --complete --strict
+
       - name: Upload bindings artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -69,10 +89,9 @@ jobs:
 
   publish:
     if: >
-      (github.event_name == 'push' && (
-        github.ref == 'refs/heads/master' ||
-        startsWith(github.ref, 'refs/tags/v')
-      )) ||
+      (github.event_name == 'push' &&
+        (github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/v'))
+      ) ||
       (github.event_name == 'workflow_dispatch' && github.event.inputs.publish == 'true')
     needs: [build-test, generate-bindings]
     runs-on: ubuntu-latest
@@ -88,6 +107,10 @@ jobs:
       - name: Install wasm32-wasip2 target
         run: rustup target add wasm32-wasip2 --toolchain nightly
       - uses: Swatinem/rust-cache@v2
+
+      - name: Cargo fetch
+        run: cargo fetch --locked
+
       - name: Publish changed crates
         uses: katyo/publish-crates@v2
         with:

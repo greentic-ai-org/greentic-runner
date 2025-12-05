@@ -1,7 +1,11 @@
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_yaml_bw::{self as serde_yaml, Value};
-use std::{collections::HashSet, fs, path::{Path, PathBuf}};
+use std::{
+    collections::HashSet,
+    fs,
+    path::{Path, PathBuf},
+};
 use url::Url;
 
 use self::component::ComponentFeatures;
@@ -74,9 +78,9 @@ pub struct McpServer {
 pub fn load_pack(pack_dir: &Path) -> Result<PackMetadata> {
     // Accept absolute or relative input but normalize it under its parent to avoid escapes.
     let (root, candidate) = if pack_dir.is_absolute() {
-        let parent = pack_dir
-            .parent()
-            .ok_or_else(|| anyhow::anyhow!("pack directory has no parent: {}", pack_dir.display()))?;
+        let parent = pack_dir.parent().ok_or_else(|| {
+            anyhow::anyhow!("pack directory has no parent: {}", pack_dir.display())
+        })?;
         let root = parent
             .canonicalize()
             .with_context(|| format!("failed to canonicalize {}", parent.display()))?;

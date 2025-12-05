@@ -20,4 +20,4 @@ tokio.workspace = true
 tracing.workspace = true
 uuid.workspace = true
 zip.workspace = true
-runner-core = { path = "../runner-core" }
+runner-core.workspace = true

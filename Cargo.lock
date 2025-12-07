@@ -301,9 +301,9 @@ checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
 name = "base64ct"
-version = "1.8.0"
+version = "1.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "55248b47b0caf0546f7988906588779981c43bb1bc9d0c44087278f80cdb44ba"
+checksum = "0e050f626429857a27ddccb31e0aca21356bfa709c04041aefddac081a8f068a"
 
 [[package]]
 name = "bit-set"
@@ -461,9 +461,9 @@ dependencies = [
 
 [[package]]
 name = "cc"
-version = "1.2.48"
+version = "1.2.49"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c481bdbf0ed3b892f6f806287d72acd515b352a4ec27a208489b8c1bc839633a"
+checksum = "90583009037521a116abf44494efecd645ba48b6622457080f080b85544e2215"
 dependencies = [
  "find-msvc-tools",
  "shlex",
@@ -1059,13 +1059,13 @@ checksum = "3a3076410a55c90011c298b04d0cfa770b00fa04e1e3c97d3f6c9de105a03844"
 
 [[package]]
 name = "flate2"
-version = "1.1.7"
+version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a2152dbcb980c05735e2a651d96011320a949eb31a0c8b38b72645ce97dec676"
+checksum = "bfe33edd8e85a12a67454e37f8c75e730830d83e313556ab9ebf9ee7fbeb3bfb"
 dependencies = [
  "crc32fast",
+ "libz-rs-sys",
  "miniz_oxide",
- "zlib-rs",
 ]
 
 [[package]]
@@ -1266,9 +1266,9 @@ dependencies = [
 
 [[package]]
 name = "greentic-flow"
-version = "0.4.1"
+version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e5cc994d6c5b8d00aa4c3e2bf038f6079468db79815202b8b0255a02c7aec0ef"
+checksum = "d61b06239e91a9cbd324aa3a17e98c71022b3145a4fadbede4d6d745bf8e8a8b"
 dependencies = [
  "anyhow",
  "blake3",
@@ -1290,9 +1290,9 @@ dependencies = [
 
 [[package]]
 name = "greentic-interfaces"
-version = "0.4.49"
+version = "0.4.53"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "11df4af487223a6b5b514737872ac3f4e829e1172dfc6ecc3bfbead486fcc953"
+checksum = "b7f4c6e2e20b90d0d1f6de554902abce35755ca8eab22186ef19bc38badcbc53"
 dependencies = [
  "anyhow",
  "greentic-types",
@@ -1307,9 +1307,9 @@ dependencies = [
 
 [[package]]
 name = "greentic-interfaces-host"
-version = "0.4.49"
+version = "0.4.53"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "98437b924bf1da4e2c042c8957ae9ef2805eb813fb0a404e0946c0b62c5753dd"
+checksum = "6165e7b9925d3c74afc94ec8c1a5f5439caaa7c0fa571e5f5f3244396487f760"
 dependencies = [
  "greentic-interfaces",
  "greentic-types",
@@ -1317,9 +1317,9 @@ dependencies = [
 
 [[package]]
 name = "greentic-interfaces-wasmtime"
-version = "0.4.49"
+version = "0.4.53"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e1b768a7f116bb579d16651adc67ff1efaf941904df58059be7befa57b40f2fd"
+checksum = "79a16cf109ef9c941c8c69f1f009bfd760fca924cf42929b7fc25be8f2df0150"
 dependencies = [
  "anyhow",
  "camino",
@@ -1362,7 +1362,7 @@ dependencies = [
 
 [[package]]
 name = "greentic-runner"
-version = "0.4.5"
+version = "0.4.6"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1389,7 +1389,7 @@ dependencies = [
 
 [[package]]
 name = "greentic-runner-desktop"
-version = "0.4.5"
+version = "0.4.6"
 dependencies = [
  "anyhow",
  "greentic-pack",
@@ -1408,7 +1408,7 @@ dependencies = [
 
 [[package]]
 name = "greentic-runner-host"
-version = "0.4.5"
+version = "0.4.6"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -1461,7 +1461,7 @@ dependencies = [
 
 [[package]]
 name = "greentic-runner-tests"
-version = "0.4.5"
+version = "0.4.6"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2122,6 +2122,15 @@ name = "libm"
 version = "0.2.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f9fbbcab51052fe104eb5e5d351cf728d30a5be1fe14d9be8a3b097481fb97de"
+
+[[package]]
+name = "libz-rs-sys"
+version = "0.5.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8b484ba8d4f775eeca644c452a56650e544bf7e617f1d170fe7298122ead5222"
+dependencies = [
+ "zlib-rs",
+]
 
 [[package]]
 name = "linux-raw-sys"
@@ -2972,7 +2981,7 @@ dependencies = [
 
 [[package]]
 name = "runner-core"
-version = "0.4.5"
+version = "0.4.6"
 dependencies = [
  "anyhow",
  "base64",

@@ -340,7 +340,11 @@ impl FlowEngine {
                 let reason = extract_wait_reason(&payload);
                 Ok(DispatchOutcome::wait(NodeOutput::new(payload), reason))
             }
-            other => bail!("unsupported node component: {other}"),
+            other => bail!(
+                "unsupported node component `{other}` in flow {} node {}",
+                ctx.flow_id,
+                node_id
+            ),
         }
     }
 

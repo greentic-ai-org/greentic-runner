@@ -14,6 +14,7 @@ use crate::oauth::{OAuthBrokerConfig, OAuthBrokerHost, OAuthHostContext};
 use crate::runtime_wasmtime::{Component, Engine, Linker, ResourceTable, WasmResult};
 use anyhow::{Context, Result, anyhow, bail};
 use greentic_flow::ir::{FlowIR, NodeIR, RouteIR};
+use greentic_flow::model::FlowDoc;
 use greentic_interfaces_host::host_import::v0_2 as host_import_v0_2;
 use greentic_interfaces_host::host_import::v0_2::greentic::host_import::imports::{
     HttpRequest as LegacyHttpRequest, HttpResponse as LegacyHttpResponse,
@@ -1200,13 +1201,13 @@ fn load_flow_doc(
     if let Ok(bytes) = read_entry(archive, &entry.file_yaml)
         && let Ok(doc) = serde_yaml::from_slice(&bytes)
     {
-        return Ok(doc);
+        return Ok(normalize_flow_doc(doc));
     }
     let json_bytes = read_entry(archive, &entry.file_json)
         .with_context(|| format!("missing flow document {}", entry.file_json))?;
     let doc = serde_json::from_slice(&json_bytes)
         .with_context(|| format!("failed to parse {}", entry.file_json))?;
-    Ok(doc)
+    Ok(normalize_flow_doc(doc))
 }
 
 fn read_entry(archive: &mut ZipArchive<File>, name: &str) -> Result<Vec<u8>> {
@@ -1216,6 +1217,106 @@ fn read_entry(archive: &mut ZipArchive<File>, name: &str) -> Result<Vec<u8>> {
     let mut buf = Vec::new();
     file.read_to_end(&mut buf)?;
     Ok(buf)
+}
+
+fn normalize_flow_doc(mut doc: FlowDoc) -> FlowDoc {
+    for node in doc.nodes.values_mut() {
+        if node.component.is_empty()
+            && let Some((component_ref, payload)) = node.raw.iter().next()
+        {
+            let (operation, input, config) = infer_component_exec(payload, component_ref);
+            let mut payload_obj = serde_json::Map::new();
+            payload_obj.insert("component".into(), Value::String(component_ref.clone()));
+            payload_obj.insert("operation".into(), Value::String(operation));
+            payload_obj.insert("input".into(), input);
+            if let Some(cfg) = config {
+                payload_obj.insert("config".into(), cfg);
+            }
+            node.component = "component.exec".to_string();
+            node.payload = Value::Object(payload_obj);
+        }
+    }
+    doc
+}
+
+fn infer_component_exec(payload: &Value, component_ref: &str) -> (String, Value, Option<Value>) {
+    let default_op = if component_ref.starts_with("templating.") {
+        "render"
+    } else {
+        "invoke"
+    }
+    .to_string();
+
+    if let Value::Object(map) = payload {
+        let op = map
+            .get("op")
+            .or_else(|| map.get("operation"))
+            .and_then(Value::as_str)
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| default_op.clone());
+
+        let mut input = map.clone();
+        let config = input.remove("config");
+        input.remove("op");
+        input.remove("operation");
+        return (op, Value::Object(input), config);
+    }
+
+    (default_op, payload.clone(), None)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use greentic_flow::model::{FlowDoc, Node, Route};
+    use serde_json::json;
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn normalizes_raw_component_to_component_exec() {
+        let mut nodes = BTreeMap::new();
+        let mut raw = BTreeMap::new();
+        raw.insert(
+            "templating.handlebars".into(),
+            json!({ "template": "Hi {{name}}" }),
+        );
+        nodes.insert(
+            "start".into(),
+            Node {
+                raw,
+                routing: vec![Route {
+                    to: None,
+                    out: Some(true),
+                }],
+                ..Default::default()
+            },
+        );
+        let doc = FlowDoc {
+            id: "welcome".into(),
+            title: None,
+            description: None,
+            flow_type: "messaging".into(),
+            start: Some("start".into()),
+            parameters: json!({}),
+            nodes,
+        };
+
+        let normalized = normalize_flow_doc(doc);
+        let node = normalized.nodes.get("start").expect("node exists");
+        assert_eq!(node.component, "component.exec");
+        assert!(node.raw.is_empty() || node.raw.contains_key("templating.handlebars"));
+        let payload = node.payload.as_object().expect("payload object");
+        assert_eq!(
+            payload.get("component"),
+            Some(&Value::String("templating.handlebars".into()))
+        );
+        assert_eq!(
+            payload.get("operation"),
+            Some(&Value::String("render".into()))
+        );
+        let input = payload.get("input").unwrap();
+        assert_eq!(input, &json!({ "template": "Hi {{name}}" }));
+    }
 }
 
 fn load_components_from_archive(

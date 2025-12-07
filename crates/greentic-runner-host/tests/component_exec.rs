@@ -14,8 +14,11 @@ use semver::Version;
 use serde_json::Map as JsonMap;
 use serde_json::Value;
 use std::collections::HashMap;
+use std::fs::File;
+use std::io::Read;
 use std::sync::Arc;
 use tempfile::TempDir;
+use zip::ZipArchive;
 
 fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -129,6 +132,25 @@ fn host_config(bindings_path: &Path) -> HostConfig {
     }
 }
 
+fn component_artifact_path(temp_dir: &Path) -> Result<PathBuf> {
+    let local =
+        workspace_root().join("tests/fixtures/packs/runner-components/components/qa_process.wasm");
+    if local.exists() {
+        return Ok(local);
+    }
+    let archive_path =
+        workspace_root().join("tests/fixtures/packs/runner-components/runner-components.gtpack");
+    let mut archive = ZipArchive::new(File::open(&archive_path).context("open fixture gtpack")?)?;
+    let mut wasm = archive
+        .by_name("components/qa.process@0.1.0/component.wasm")
+        .context("qa.process component missing from fixture pack")?;
+    let out = temp_dir.join("qa_process.wasm");
+    let mut buf = Vec::new();
+    wasm.read_to_end(&mut buf)?;
+    std::fs::write(&out, &buf)?;
+    Ok(out)
+}
+
 static RUNTIME: Lazy<&'static tokio::runtime::Runtime> = Lazy::new(|| {
     Box::leak(Box::new(
         tokio::runtime::Builder::new_current_thread()
@@ -167,6 +189,7 @@ fn exec_node_uses_inner_component_artifact() -> Result<()> {
     let pack_path = temp.path().join("component-exec.gtpack");
     let bindings_path = temp.path().join("bindings.yaml");
     std::fs::write(&bindings_path, b"tenant: demo")?;
+    let component_path = component_artifact_path(temp.path())?;
 
     // Build a pack whose flow uses component.exec to call qa.process.
     let flow_yaml = r#"
@@ -209,13 +232,11 @@ nodes:
         components: Vec::new(),
     };
 
-    let component_path =
-        workspace_root().join("tests/fixtures/packs/runner-components/components/qa_process.wasm");
     let pack_builder = PackBuilder::new(meta)
         .with_flow(flow_bundle)
         .with_component(ComponentArtifact {
             name: "qa.process".into(),
-            version: Version::parse("0.0.0")?,
+            version: Version::parse("0.1.0")?,
             wasm_path: component_path,
             schema_json: None,
             manifest_json: None,

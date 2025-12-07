@@ -1224,6 +1224,12 @@ fn normalize_flow_doc(mut doc: FlowDoc) -> FlowDoc {
         if node.component.is_empty()
             && let Some((component_ref, payload)) = node.raw.iter().next()
         {
+            if component_ref.starts_with("emit.") {
+                node.component = component_ref.clone();
+                node.payload = payload.clone();
+                node.raw.clear();
+                continue;
+            }
             let (target_component, operation, input, config) =
                 infer_component_exec(payload, component_ref);
             let mut payload_obj = serde_json::Map::new();

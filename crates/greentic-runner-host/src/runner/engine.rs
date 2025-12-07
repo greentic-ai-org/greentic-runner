@@ -6,7 +6,8 @@ use std::time::Duration;
 
 use crate::component_api::node::{ExecCtx as ComponentExecCtx, TenantCtx as ComponentTenantCtx};
 use anyhow::{Context, Result, anyhow, bail};
-use greentic_flow::ir::{FlowIR, NodeIR};
+use greentic_flow::ir::{FlowIR, NodeIR, RouteIR};
+use indexmap::IndexMap;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map as JsonMap, Value, json};
@@ -21,7 +22,7 @@ pub struct FlowEngine {
     packs: Vec<Arc<PackRuntime>>,
     flows: Vec<FlowDescriptor>,
     flow_sources: HashMap<String, usize>,
-    flow_ir: RwLock<HashMap<String, FlowIR>>,
+    flow_ir: RwLock<HashMap<String, HostFlowIR>>,
     default_env: String,
 }
 
@@ -48,6 +49,39 @@ pub enum FlowStatus {
 pub struct FlowExecution {
     pub output: Value,
     pub status: FlowStatus,
+}
+
+#[derive(Clone, Debug)]
+#[allow(dead_code)]
+struct HostFlowIR {
+    id: String,
+    flow_type: String,
+    start: Option<String>,
+    parameters: Value,
+    nodes: IndexMap<String, HostNode>,
+}
+
+#[derive(Clone, Debug)]
+pub struct HostNode {
+    kind: NodeKind,
+    payload_expr: Value,
+    routes: Vec<RouteIR>,
+}
+
+#[derive(Clone, Debug)]
+enum NodeKind {
+    Exec { target_component: String },
+    PackComponent { component_ref: String },
+    FlowCall,
+    BuiltinEmit { kind: EmitKind },
+    Wait,
+}
+
+#[derive(Clone, Debug)]
+enum EmitKind {
+    Log,
+    Response,
+    Other(String),
 }
 
 impl FlowExecution {
@@ -93,7 +127,7 @@ impl FlowEngine {
                 let task_flow_id = flow_id.clone();
                 match task::spawn_blocking(move || pack_clone.load_flow_ir(&task_flow_id)).await {
                     Ok(Ok(ir)) => {
-                        ir_map.insert(flow_id, ir);
+                        ir_map.insert(flow_id, HostFlowIR::from(ir));
                     }
                     Ok(Err(err)) => {
                         tracing::warn!(flow_id = %flow.id, error = %err, "failed to load flow metadata");
@@ -114,7 +148,7 @@ impl FlowEngine {
         })
     }
 
-    async fn get_or_load_flow_ir(&self, flow_id: &str) -> Result<FlowIR> {
+    async fn get_or_load_flow_ir(&self, flow_id: &str) -> Result<HostFlowIR> {
         if let Some(ir) = self.flow_ir.read().get(flow_id).cloned() {
             return Ok(ir);
         }
@@ -129,10 +163,11 @@ impl FlowEngine {
         let ir = task::spawn_blocking(move || pack.load_flow_ir(&task_flow_id))
             .await
             .context("failed to join flow metadata task")??;
+        let host_ir = HostFlowIR::from(ir);
         self.flow_ir
             .write()
-            .insert(flow_id_owned.clone(), ir.clone());
-        Ok(ir)
+            .insert(flow_id_owned.clone(), host_ir.clone());
+        Ok(host_ir)
     }
 
     pub async fn execute(&self, ctx: FlowContext<'_>, input: Value) -> Result<FlowExecution> {
@@ -222,7 +257,7 @@ impl FlowEngine {
     async fn drive_flow(
         &self,
         ctx: &FlowContext<'_>,
-        flow_ir: FlowIR,
+        flow_ir: HostFlowIR,
         mut state: ExecutionState,
         resume_from: Option<String>,
     ) -> Result<FlowExecution> {
@@ -319,32 +354,43 @@ impl FlowEngine {
         &self,
         ctx: &FlowContext<'_>,
         node_id: &str,
-        node: &NodeIR,
+        node: &HostNode,
         state: &mut ExecutionState,
         payload: Value,
     ) -> Result<DispatchOutcome> {
-        match node.component.as_str() {
-            "component.exec" => self
-                .execute_component_exec(ctx, node_id, state, payload)
+        match &node.kind {
+            NodeKind::Exec { target_component } => self
+                .execute_component_exec(
+                    ctx,
+                    node_id,
+                    state,
+                    payload,
+                    Some(target_component.as_str()),
+                )
                 .await
                 .map(DispatchOutcome::complete),
-            "flow.call" => self
+            NodeKind::PackComponent { component_ref } => self
+                .execute_component_exec(ctx, node_id, state, payload, Some(component_ref.as_str()))
+                .await
+                .map(DispatchOutcome::complete),
+            NodeKind::FlowCall => self
                 .execute_flow_call(ctx, payload)
                 .await
                 .map(DispatchOutcome::complete),
-            component if component.starts_with("emit") => {
+            NodeKind::BuiltinEmit { kind } => {
+                match kind {
+                    EmitKind::Log | EmitKind::Response => {}
+                    EmitKind::Other(component) => {
+                        tracing::debug!(%component, "handling emit.* as builtin");
+                    }
+                }
                 state.push_egress(payload.clone());
                 Ok(DispatchOutcome::complete(NodeOutput::new(payload)))
             }
-            "session.wait" => {
+            NodeKind::Wait => {
                 let reason = extract_wait_reason(&payload);
                 Ok(DispatchOutcome::wait(NodeOutput::new(payload), reason))
             }
-            other => bail!(
-                "unsupported node component `{other}` in flow {} node {}",
-                ctx.flow_id,
-                node_id
-            ),
         }
     }
 
@@ -403,6 +449,7 @@ impl FlowEngine {
         node_id: &str,
         state: &ExecutionState,
         payload: Value,
+        component_override: Option<&str>,
     ) -> Result<NodeOutput> {
         #[derive(Deserialize)]
         struct ComponentPayload {
@@ -418,9 +465,9 @@ impl FlowEngine {
 
         let payload: ComponentPayload =
             serde_json::from_value(payload).context("invalid payload for component.exec")?;
-        let component_ref = payload
-            .component
-            .filter(|v| !v.trim().is_empty())
+        let component_ref = component_override
+            .map(str::to_string)
+            .or_else(|| payload.component.filter(|v| !v.trim().is_empty()))
             .with_context(|| "component.exec requires a component_ref")?;
         let operation = payload
             .operation
@@ -484,7 +531,7 @@ pub trait ExecutionObserver: Send + Sync {
 pub struct NodeEvent<'a> {
     pub context: &'a FlowContext<'a>,
     pub node_id: &'a str,
-    pub node: &'a NodeIR,
+    pub node: &'a HostNode,
     pub payload: &'a Value,
 }
 
@@ -612,6 +659,91 @@ fn extract_wait_reason(payload: &Value) -> Option<String> {
             .and_then(Value::as_str)
             .map(|value| value.to_string()),
         _ => None,
+    }
+}
+
+impl From<FlowIR> for HostFlowIR {
+    fn from(value: FlowIR) -> Self {
+        let nodes = value
+            .nodes
+            .into_iter()
+            .map(|(id, node)| (id, HostNode::from(node)))
+            .collect();
+        Self {
+            id: value.id,
+            flow_type: value.flow_type,
+            start: value.start,
+            parameters: value.parameters,
+            nodes,
+        }
+    }
+}
+
+impl From<NodeIR> for HostNode {
+    fn from(node: NodeIR) -> Self {
+        let kind = match node.component.as_str() {
+            "component.exec" => {
+                let target = extract_target_component(&node.payload_expr)
+                    .unwrap_or_else(|| "component.exec".to_string());
+                if target.starts_with("emit.") {
+                    NodeKind::BuiltinEmit {
+                        kind: emit_kind_from_ref(&target),
+                    }
+                } else {
+                    NodeKind::Exec {
+                        target_component: target,
+                    }
+                }
+            }
+            "flow.call" => NodeKind::FlowCall,
+            "session.wait" => NodeKind::Wait,
+            comp if comp.starts_with("emit.") => NodeKind::BuiltinEmit {
+                kind: emit_kind_from_ref(comp),
+            },
+            other => NodeKind::PackComponent {
+                component_ref: other.to_string(),
+            },
+        };
+        let payload_expr = match kind {
+            NodeKind::BuiltinEmit { .. } => extract_emit_payload(&node.payload_expr),
+            _ => node.payload_expr.clone(),
+        };
+        Self {
+            kind,
+            payload_expr,
+            routes: node.routes,
+        }
+    }
+}
+
+fn extract_target_component(payload: &Value) -> Option<String> {
+    match payload {
+        Value::Object(map) => map
+            .get("component")
+            .or_else(|| map.get("component_ref"))
+            .and_then(Value::as_str)
+            .map(|s| s.to_string()),
+        _ => None,
+    }
+}
+
+fn extract_emit_payload(payload: &Value) -> Value {
+    if let Value::Object(map) = payload {
+        if let Some(input) = map.get("input") {
+            return input.clone();
+        }
+        if let Some(inner) = map.get("payload") {
+            return inner.clone();
+        }
+    }
+    payload.clone()
+}
+
+fn emit_kind_from_ref(component_ref: &str) -> EmitKind {
+    match component_ref {
+        "emit.log" => EmitKind::Log,
+        "emit.response" => EmitKind::Response,
+        other => EmitKind::Other(other.to_string()),
     }
 }
 

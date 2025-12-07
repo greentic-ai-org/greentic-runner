@@ -151,61 +151,12 @@ fn component_artifact_path(temp_dir: &Path) -> Result<PathBuf> {
     Ok(out)
 }
 
-static RUNTIME: Lazy<&'static tokio::runtime::Runtime> = Lazy::new(|| {
-    Box::leak(Box::new(
-        tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("test runtime"),
-    ))
-});
-
-#[test]
-fn component_exec_invokes_pack_component() -> Result<()> {
-    let temp = TempDir::new()?;
-    let bindings_path = temp.path().join("bindings.yaml");
-    std::fs::write(&bindings_path, b"tenant: demo")?;
-
-    let components = build_components()?;
-    let flow = demo_flow_ir();
-    let mut flows = HashMap::new();
-    flows.insert(flow.id.clone(), flow);
-
-    let config = Arc::new(host_config(&bindings_path));
-    let runtime = Arc::new(
-        PackRuntime::for_component_test(components, flows.clone(), Arc::clone(&config))
-            .context("pack init")?,
-    );
-    // Ensure the runtime constructed successfully with components and flows in place.
-    let _ = (runtime, config, flows);
-    Ok(())
-}
-
-#[test]
-fn exec_node_uses_inner_component_artifact() -> Result<()> {
-    // Regression: component.exec is a meta-component and must call the referenced pack artifact.
-    let rt = *RUNTIME;
-    let temp = TempDir::new()?;
-    let pack_path = temp.path().join("component-exec.gtpack");
-    let bindings_path = temp.path().join("bindings.yaml");
-    std::fs::write(&bindings_path, b"tenant: demo")?;
-    let component_path = component_artifact_path(temp.path())?;
-
-    // Build a pack whose flow uses component.exec to call qa.process.
-    let flow_yaml = r#"
-id: exec.flow
-type: demo
-start: exec
-nodes:
-  exec:
-    component.exec:
-      component: qa.process
-      operation: process
-      input:
-        text: "hello"
-    routing:
-      - out: true
-"#;
+fn build_pack(flow_yaml: &str, pack_path: &Path) -> Result<()> {
+    let component_path = component_artifact_path(
+        pack_path
+            .parent()
+            .expect("pack path should have parent for temp dir"),
+    )?;
     let (flow_bundle, _ir) = load_and_validate_bundle_with_ir(flow_yaml, None)?;
 
     let meta = PackMeta {
@@ -244,7 +195,68 @@ nodes:
             world: Some("greentic:component@0.4.0".into()),
             hash_blake3: None,
         });
-    pack_builder.with_signing(Signing::Dev).build(&pack_path)?;
+    pack_builder
+        .with_signing(Signing::Dev)
+        .build(pack_path)
+        .context("build test pack")?;
+    Ok(())
+}
+
+static RUNTIME: Lazy<&'static tokio::runtime::Runtime> = Lazy::new(|| {
+    Box::leak(Box::new(
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime"),
+    ))
+});
+
+#[test]
+fn component_exec_invokes_pack_component() -> Result<()> {
+    let temp = TempDir::new()?;
+    let bindings_path = temp.path().join("bindings.yaml");
+    std::fs::write(&bindings_path, b"tenant: demo")?;
+
+    let components = build_components()?;
+    let flow = demo_flow_ir();
+    let mut flows = HashMap::new();
+    flows.insert(flow.id.clone(), flow);
+
+    let config = Arc::new(host_config(&bindings_path));
+    let runtime = Arc::new(
+        PackRuntime::for_component_test(components, flows.clone(), Arc::clone(&config))
+            .context("pack init")?,
+    );
+    // Ensure the runtime constructed successfully with components and flows in place.
+    let _ = (runtime, config, flows);
+    Ok(())
+}
+
+#[test]
+fn exec_node_uses_inner_component_artifact() -> Result<()> {
+    // Regression: component.exec is a meta-component and must call the referenced pack artifact.
+    let rt = *RUNTIME;
+    let temp = TempDir::new()?;
+    let pack_path = temp.path().join("component-exec.gtpack");
+    let bindings_path = temp.path().join("bindings.yaml");
+    std::fs::write(&bindings_path, b"tenant: demo")?;
+
+    // Build a pack whose flow uses component.exec to call qa.process.
+    let flow_yaml = r#"
+id: exec.flow
+type: demo
+start: exec
+nodes:
+  exec:
+    component.exec:
+      component: qa.process
+      operation: process
+      input:
+        text: "hello"
+    routing:
+      - out: true
+"#;
+    build_pack(flow_yaml, &pack_path)?;
 
     let config = Arc::new(host_config(&bindings_path));
     let pack = Arc::new(rt.block_on(PackRuntime::load(
@@ -294,6 +306,88 @@ nodes:
     assert!(
         output_str.contains("hello"),
         "expected qa.process to run; output was {output_str}"
+    );
+    Ok(())
+}
+
+#[test]
+fn emit_log_is_builtin_not_pack_component() -> Result<()> {
+    // Regression: emit.log should be treated as a built-in, not looked up as a pack artifact.
+    let rt = *RUNTIME;
+    let temp = TempDir::new()?;
+    let pack_path = temp.path().join("emit-log.gtpack");
+    let bindings_path = temp.path().join("bindings.yaml");
+    std::fs::write(&bindings_path, b"tenant: demo")?;
+
+    let flow_yaml = r#"
+id: emit.flow
+type: demo
+start: exec
+nodes:
+  exec:
+    component.exec:
+      component: qa.process
+      operation: process
+      input:
+        text: "hello"
+    routing:
+      - to: log
+  log:
+    emit.log:
+      message: "logged"
+    routing:
+      - out: true
+"#;
+    build_pack(flow_yaml, &pack_path)?;
+
+    let config = Arc::new(host_config(&bindings_path));
+    let pack = Arc::new(rt.block_on(PackRuntime::load(
+        &pack_path,
+        Arc::clone(&config),
+        None,
+        None,
+        None,
+        None,
+        Arc::new(greentic_runner_host::wasi::RunnerWasiPolicy::new()),
+        greentic_runner_host::secrets::default_manager(),
+        None,
+        false,
+    ))?);
+    let engine = rt.block_on(FlowEngine::new(
+        vec![Arc::clone(&pack)],
+        Arc::clone(&config),
+    ))?;
+
+    let retry_config = config.retry.clone().into();
+    let tenant = config.tenant.clone();
+    let flow_id = "emit.flow".to_string();
+    let ctx = FlowContext {
+        tenant: tenant.as_str(),
+        flow_id: flow_id.as_str(),
+        node_id: None,
+        tool: None,
+        action: None,
+        session_id: None,
+        provider_id: None,
+        retry_config,
+        observer: None,
+        mocks: None,
+    };
+
+    let execution = rt
+        .block_on(engine.execute(ctx, Value::Null))
+        .context("emit.log flow run")?;
+    match execution.status {
+        FlowStatus::Completed => {}
+        FlowStatus::Waiting(wait) => {
+            anyhow::bail!("emit flow paused unexpectedly: {:?}", wait.reason);
+        }
+    }
+
+    let output_str = execution.output.to_string();
+    assert!(
+        output_str.contains("logged"),
+        "expected emit.log to produce output; got {output_str}"
     );
     Ok(())
 }

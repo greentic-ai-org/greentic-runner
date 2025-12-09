@@ -18,6 +18,7 @@ use once_cell::sync::Lazy;
 use semver::Version;
 use serde_json::json;
 use std::path::Path;
+use std::process::Command;
 use tempfile::TempDir;
 use zip::ZipWriter;
 use zip::write::FileOptions;
@@ -104,20 +105,53 @@ fn build_pack(pack_path: &Path) -> Result<()> {
     writer.start_file("manifest.cbor", options)?;
     writer.write_all(&manifest_bytes)?;
 
-    for (id, file_name) in [
-        ("qa.process", "components/qa_process.wasm"),
-        (
-            "templating.handlebars",
-            "components/templating_handlebars.wasm",
-        ),
-    ] {
+    for (id, artifact_path) in component_sources(&fixtures)? {
         writer.start_file(format!("components/{id}.wasm"), options)?;
-        let mut file = std::fs::File::open(fixtures.join(file_name))
-            .with_context(|| format!("open component {}", file_name))?;
+        let mut file = std::fs::File::open(&artifact_path)
+            .with_context(|| format!("open component {}", artifact_path.display()))?;
         std::io::copy(&mut file, &mut writer)?;
     }
     writer.finish().context("finalise test pack")?;
     Ok(())
+}
+
+fn component_sources(fixtures_root: &Path) -> Result<Vec<(String, PathBuf)>> {
+    let crates_root = workspace_root().join("tests/fixtures/runner-components");
+    let components = [
+        ("qa.process", "qa_process"),
+        ("templating.handlebars", "templating_handlebars"),
+    ];
+    let mut sources = Vec::new();
+    for (id, crate_name) in components {
+        let prebuilt = fixtures_root
+            .join("components")
+            .join(format!("{crate_name}.wasm"));
+        if prebuilt.exists() {
+            sources.push((id.to_string(), prebuilt));
+            continue;
+        }
+        let crate_dir = crates_root.join(crate_name);
+        let status = Command::new("cargo")
+            .env("CARGO_NET_OFFLINE", "true")
+            .current_dir(&crate_dir)
+            .args([
+                "build",
+                "--offline",
+                "--target",
+                "wasm32-wasip2",
+                "--release",
+            ])
+            .status()
+            .with_context(|| format!("failed to build component crate {}", crate_name))?;
+        if !status.success() {
+            anyhow::bail!("component build failed for {}", crate_name);
+        }
+        let artifact = crate_dir
+            .join("target/wasm32-wasip2/release")
+            .join(format!("{crate_name}.wasm"));
+        sources.push((id.to_string(), artifact));
+    }
+    Ok(sources)
 }
 
 fn demo_exec_ctx(node_id: &str) -> greentic_runner_host::component_api::node::ExecCtx {

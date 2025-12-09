@@ -13,8 +13,6 @@ use crate::imports::register_all;
 use crate::oauth::{OAuthBrokerConfig, OAuthBrokerHost, OAuthHostContext};
 use crate::runtime_wasmtime::{Component, Engine, Linker, ResourceTable, WasmResult};
 use anyhow::{Context, Result, anyhow, bail};
-use greentic_flow::ir::{FlowIR, NodeIR, RouteIR};
-use greentic_flow::model::FlowDoc;
 use greentic_interfaces_host::host_import::v0_2 as host_import_v0_2;
 use greentic_interfaces_host::host_import::v0_2::greentic::host_import::imports::{
     HttpRequest as LegacyHttpRequest, HttpResponse as LegacyHttpResponse,
@@ -23,13 +21,12 @@ use greentic_interfaces_host::host_import::v0_2::greentic::host_import::imports:
 use greentic_interfaces_host::host_import::v0_6::{
     self as host_import_v0_6, iface_types, state, types,
 };
-use greentic_pack::reader::{SigningPolicy, open_pack};
 use greentic_session::SessionKey as StoreSessionKey;
 use greentic_types::{
-    EnvId, FlowId, SessionCursor as StoreSessionCursor, SessionData, StateKey as StoreStateKey,
-    TeamId, TenantCtx as TypesTenantCtx, TenantId, UserId,
+    EnvId, Flow, FlowId, SessionCursor as StoreSessionCursor, SessionData,
+    StateKey as StoreStateKey, TeamId, TenantCtx as TypesTenantCtx, TenantId, UserId,
+    decode_pack_manifest,
 };
-use indexmap::IndexMap;
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;
 use reqwest::blocking::Client as BlockingClient;
@@ -37,12 +34,12 @@ use runner_core::normalize_under_root;
 use serde::{Deserialize, Serialize};
 use serde_cbor;
 use serde_json::{self, Value};
-use serde_yaml_bw as serde_yaml;
 use tokio::fs;
 use wasmparser::{Parser, Payload};
 use wasmtime::StoreContextMut;
 use zip::ZipArchive;
 
+use crate::runner::flow_adapter::{FlowIR, flow_ir_to_flow};
 use crate::runner::mocks::{HttpDecision, HttpMockRequest, HttpMockResponse, MockLayer};
 
 use crate::config::HostConfig;
@@ -54,6 +51,9 @@ use crate::wasi::RunnerWasiPolicy;
 use tracing::warn;
 use wasmtime_wasi::{WasiCtx, WasiCtxView, WasiView};
 
+#[cfg(test)]
+use greentic_flow::model::FlowDoc;
+
 #[allow(dead_code)]
 pub struct PackRuntime {
     /// Component artifact path (wasm file).
@@ -63,7 +63,7 @@ pub struct PackRuntime {
     config: Arc<HostConfig>,
     engine: Engine,
     metadata: PackMetadata,
-    manifest: Option<greentic_pack::builder::PackManifest>,
+    manifest: Option<greentic_types::PackManifest>,
     mocks: Option<Arc<MockLayer>>,
     flows: Option<PackFlows>,
     components: HashMap<String, PackComponent>,
@@ -260,6 +260,17 @@ impl HostState {
         }
         store_cursor
     }
+}
+
+fn load_manifest_and_flows(path: &Path) -> Result<(greentic_types::PackManifest, PackFlows)> {
+    let mut archive = ZipArchive::new(File::open(path)?)
+        .with_context(|| format!("{} is not a valid gtpack", path.display()))?;
+    let bytes = read_entry(&mut archive, "manifest.cbor")
+        .with_context(|| format!("missing manifest.cbor in {}", path.display()))?;
+    let manifest = decode_pack_manifest(&bytes)
+        .context("failed to decode pack manifest from manifest.cbor")?;
+    let cache = PackFlows::from_manifest(manifest.clone());
+    Ok((manifest, cache))
 }
 
 pub struct ComponentState {
@@ -823,35 +834,22 @@ impl PackRuntime {
             .unwrap_or_else(|| PackMetadata::fallback(&safe_path));
         let mut manifest = None;
         let flows = if let Some(archive_path) = archive_hint {
-            match open_pack(archive_path, SigningPolicy::DevOk) {
-                Ok(pack) => {
-                    metadata = PackMetadata::from_manifest(&pack.manifest);
-                    manifest = Some(pack.manifest);
-                    None
+            match load_manifest_and_flows(archive_path) {
+                Ok((m, cache)) => {
+                    metadata = cache.metadata.clone();
+                    manifest = Some(m);
+                    Some(cache)
                 }
                 Err(err) => {
-                    warn!(error = ?err, pack = %archive_path.display(), "failed to parse pack manifest; falling back to legacy flow cache");
-                    match PackFlows::from_archive(archive_path) {
-                        Ok(cache) => {
-                            metadata = cache.metadata.clone();
-                            Some(cache)
-                        }
-                        Err(err) => {
-                            warn!(
-                                error = %err,
-                                pack = %archive_path.display(),
-                                "failed to parse pack flows via greentic-pack; falling back to component exports"
-                            );
-                            None
-                        }
-                    }
+                    warn!(error = %err, pack = %archive_path.display(), "failed to parse pack manifest; skipping flows");
+                    None
                 }
             }
         } else {
             None
         };
         let components = if let Some(archive_path) = archive_hint {
-            match load_components_from_archive(&engine, archive_path) {
+            match load_components_from_archive(&engine, archive_path, manifest.as_ref()) {
                 Ok(map) => map,
                 Err(err) => {
                     warn!(error = %err, pack = %archive_path.display(), "failed to load components from archive");
@@ -907,11 +905,11 @@ impl PackRuntime {
                 .flows
                 .iter()
                 .map(|flow| FlowDescriptor {
-                    id: flow.id.clone(),
-                    flow_type: flow.kind.clone(),
-                    profile: manifest.meta.name.clone(),
-                    version: manifest.meta.version.to_string(),
-                    description: Some(flow.kind.clone()),
+                    id: flow.id.as_str().to_string(),
+                    flow_type: flow_kind_to_str(flow.kind).to_string(),
+                    profile: manifest.pack_id.as_str().to_string(),
+                    version: manifest.version.to_string(),
+                    description: None,
                 })
                 .collect();
             return Ok(descriptors);
@@ -1014,7 +1012,7 @@ impl PackRuntime {
         }
     }
 
-    pub fn load_flow_ir(&self, flow_id: &str) -> Result<greentic_flow::ir::FlowIR> {
+    pub fn load_flow(&self, flow_id: &str) -> Result<Flow> {
         if let Some(cache) = &self.flows {
             return cache
                 .flows
@@ -1026,24 +1024,9 @@ impl PackRuntime {
             let entry = manifest
                 .flows
                 .iter()
-                .find(|f| f.id == flow_id)
+                .find(|f| f.id.as_str() == flow_id)
                 .ok_or_else(|| anyhow!("flow '{flow_id}' not found in manifest"))?;
-            let archive_path = self.archive_path.as_ref().unwrap_or(&self.path);
-            let mut archive = ZipArchive::new(File::open(archive_path)?)?;
-            match load_flow_doc(&mut archive, entry).and_then(|doc| {
-                greentic_flow::to_ir(doc.clone())
-                    .with_context(|| format!("failed to build IR for flow {}", doc.id))
-            }) {
-                Ok(ir) => return Ok(ir),
-                Err(err) => {
-                    warn!(
-                        error = %err,
-                        flow_id = flow_id,
-                        "failed to parse flow from archive; falling back to stub IR"
-                    );
-                    return Ok(build_stub_flow_ir(&entry.id, &entry.kind));
-                }
-            }
+            return Ok(entry.flow.clone());
         }
         bail!("flow '{flow_id}' not available (pack exports disabled)")
     }
@@ -1076,19 +1059,23 @@ impl PackRuntime {
             );
         }
 
-        let descriptors = flows
-            .iter()
-            .map(|(id, ir)| FlowDescriptor {
+        let mut flow_map = HashMap::new();
+        let mut descriptors = Vec::new();
+        for (id, ir) in flows {
+            let flow_type = ir.flow_type.clone();
+            let flow = flow_ir_to_flow(ir)?;
+            flow_map.insert(id.clone(), flow);
+            descriptors.push(FlowDescriptor {
                 id: id.clone(),
-                flow_type: ir.flow_type.clone(),
+                flow_type,
                 profile: "test".into(),
                 version: "0.0.0".into(),
                 description: None,
-            })
-            .collect::<Vec<_>>();
+            });
+        }
         let flows_cache = PackFlows {
             descriptors: descriptors.clone(),
-            flows,
+            flows: flow_map,
             metadata: PackMetadata::fallback(Path::new("component-test")),
         };
 
@@ -1125,89 +1112,43 @@ fn map_legacy_error(err: LegacyIfaceError) -> types::IfaceError {
 
 struct PackFlows {
     descriptors: Vec<FlowDescriptor>,
-    flows: HashMap<String, FlowIR>,
+    flows: HashMap<String, Flow>,
     metadata: PackMetadata,
 }
 
 impl PackFlows {
-    fn from_archive(path: &Path) -> Result<Self> {
-        let pack = open_pack(path, SigningPolicy::DevOk)
-            .map_err(|err| anyhow!("failed to open pack {}: {}", path.display(), err.message))?;
-        let file = File::open(path)
-            .with_context(|| format!("failed to open archive {}", path.display()))?;
-        let mut archive = ZipArchive::new(file)
-            .with_context(|| format!("{} is not a valid gtpack", path.display()))?;
+    fn from_manifest(manifest: greentic_types::PackManifest) -> Self {
+        let descriptors = manifest
+            .flows
+            .iter()
+            .map(|entry| FlowDescriptor {
+                id: entry.id.as_str().to_string(),
+                flow_type: flow_kind_to_str(entry.kind).to_string(),
+                profile: manifest.pack_id.as_str().to_string(),
+                version: manifest.version.to_string(),
+                description: None,
+            })
+            .collect();
         let mut flows = HashMap::new();
-        let mut descriptors = Vec::new();
-        for flow in &pack.manifest.flows {
-            match load_flow_entry(&mut archive, flow, &pack.manifest.meta) {
-                Ok((descriptor, ir)) => {
-                    flows.insert(descriptor.id.clone(), ir);
-                    descriptors.push(descriptor);
-                }
-                Err(err) => {
-                    warn!(
-                        error = %err,
-                        flow_id = flow.id,
-                        "failed to parse flow metadata from archive; using stub flow"
-                    );
-                    let stub = build_stub_flow_ir(&flow.id, &flow.kind);
-                    flows.insert(flow.id.clone(), stub.clone());
-                    descriptors.push(FlowDescriptor {
-                        id: flow.id.clone(),
-                        flow_type: flow.kind.clone(),
-                        profile: pack.manifest.meta.name.clone(),
-                        version: pack.manifest.meta.version.to_string(),
-                        description: Some(flow.kind.clone()),
-                    });
-                }
-            }
+        for entry in &manifest.flows {
+            flows.insert(entry.id.as_str().to_string(), entry.flow.clone());
         }
-
-        Ok(Self {
-            metadata: PackMetadata::from_manifest(&pack.manifest),
+        Self {
+            metadata: PackMetadata::from_manifest(&manifest),
             descriptors,
             flows,
-        })
+        }
     }
 }
 
-fn load_flow_entry(
-    archive: &mut ZipArchive<File>,
-    entry: &greentic_pack::builder::FlowEntry,
-    meta: &greentic_pack::builder::PackMeta,
-) -> Result<(FlowDescriptor, FlowIR)> {
-    let doc = load_flow_doc(archive, entry)?;
-    let ir = greentic_flow::to_ir(doc.clone())
-        .with_context(|| format!("failed to build IR for flow {}", doc.id))?;
-    let descriptor = FlowDescriptor {
-        id: doc.id.clone(),
-        flow_type: doc.flow_type.clone(),
-        profile: meta.name.clone(),
-        version: meta.version.to_string(),
-        description: doc
-            .description
-            .clone()
-            .or(doc.title.clone())
-            .or_else(|| Some(entry.kind.clone())),
-    };
-    Ok((descriptor, ir))
-}
-
-fn load_flow_doc(
-    archive: &mut ZipArchive<File>,
-    entry: &greentic_pack::builder::FlowEntry,
-) -> Result<greentic_flow::model::FlowDoc> {
-    if let Ok(bytes) = read_entry(archive, &entry.file_yaml)
-        && let Ok(doc) = serde_yaml::from_slice(&bytes)
-    {
-        return Ok(normalize_flow_doc(doc));
+fn flow_kind_to_str(kind: greentic_types::FlowKind) -> &'static str {
+    match kind {
+        greentic_types::FlowKind::Messaging => "messaging",
+        greentic_types::FlowKind::Event => "event",
+        greentic_types::FlowKind::ComponentConfig => "component-config",
+        greentic_types::FlowKind::Job => "job",
+        greentic_types::FlowKind::Http => "http",
     }
-    let json_bytes = read_entry(archive, &entry.file_json)
-        .with_context(|| format!("missing flow document {}", entry.file_json))?;
-    let doc = serde_json::from_slice(&json_bytes)
-        .with_context(|| format!("failed to parse {}", entry.file_json))?;
-    Ok(normalize_flow_doc(doc))
 }
 
 fn read_entry(archive: &mut ZipArchive<File>, name: &str) -> Result<Vec<u8>> {
@@ -1219,6 +1160,7 @@ fn read_entry(archive: &mut ZipArchive<File>, name: &str) -> Result<Vec<u8>> {
     Ok(buf)
 }
 
+#[cfg(test)]
 fn normalize_flow_doc(mut doc: FlowDoc) -> FlowDoc {
     for node in doc.nodes.values_mut() {
         if node.component.is_empty()
@@ -1247,6 +1189,7 @@ fn normalize_flow_doc(mut doc: FlowDoc) -> FlowDoc {
     doc
 }
 
+#[cfg(test)]
 fn infer_component_exec(
     payload: &Value,
     component_ref: &str,
@@ -1287,7 +1230,7 @@ fn infer_component_exec(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use greentic_flow::model::{FlowDoc, Node, Route};
+    use greentic_flow::model::{FlowDoc, NodeDoc};
     use serde_json::json;
     use std::collections::BTreeMap;
 
@@ -1301,12 +1244,9 @@ mod tests {
         );
         nodes.insert(
             "start".into(),
-            Node {
+            NodeDoc {
                 raw,
-                routing: vec![Route {
-                    to: None,
-                    out: Some(true),
-                }],
+                routing: json!([{"out": true}]),
                 ..Default::default()
             },
         );
@@ -1317,6 +1257,8 @@ mod tests {
             flow_type: "messaging".into(),
             start: Some("start".into()),
             parameters: json!({}),
+            tags: Vec::new(),
+            entrypoints: BTreeMap::new(),
             nodes,
         };
 
@@ -1341,24 +1283,27 @@ mod tests {
 fn load_components_from_archive(
     engine: &Engine,
     path: &Path,
+    manifest: Option<&greentic_types::PackManifest>,
 ) -> Result<HashMap<String, PackComponent>> {
-    let pack = open_pack(path, SigningPolicy::DevOk)
-        .map_err(|err| anyhow!("failed to open pack {}: {}", path.display(), err.message))?;
-    let mut archive = ZipArchive::new(File::open(path)?)?;
+    let mut archive = ZipArchive::new(File::open(path)?)
+        .with_context(|| format!("{} is not a valid gtpack", path.display()))?;
     let mut components = HashMap::new();
-    for entry in &pack.manifest.components {
-        let bytes = read_entry(&mut archive, &entry.file_wasm)
-            .with_context(|| format!("missing component {}", entry.file_wasm))?;
-        let component = Component::from_binary(engine, &bytes)
-            .with_context(|| format!("failed to compile component {}", entry.name))?;
-        components.insert(
-            entry.name.clone(),
-            PackComponent {
-                name: entry.name.clone(),
-                version: entry.version.to_string(),
-                component,
-            },
-        );
+    if let Some(manifest) = manifest {
+        for entry in &manifest.components {
+            let file_name = format!("components/{}.wasm", entry.id.as_str());
+            let bytes = read_entry(&mut archive, &file_name)
+                .with_context(|| format!("missing component {}", file_name))?;
+            let component = Component::from_binary(engine, &bytes)
+                .with_context(|| format!("failed to compile component {}", entry.id.as_str()))?;
+            components.insert(
+                entry.id.as_str().to_string(),
+                PackComponent {
+                    name: entry.id.as_str().to_string(),
+                    version: entry.version.to_string(),
+                    component,
+                },
+            );
+        }
     }
     Ok(components)
 }
@@ -1439,50 +1384,17 @@ impl PackMetadata {
         }
     }
 
-    pub fn from_manifest(manifest: &greentic_pack::builder::PackManifest) -> Self {
-        let entry_flows = if manifest.meta.entry_flows.is_empty() {
-            manifest
-                .flows
-                .iter()
-                .map(|flow| flow.id.clone())
-                .collect::<Vec<_>>()
-        } else {
-            manifest.meta.entry_flows.clone()
-        };
+    pub fn from_manifest(manifest: &greentic_types::PackManifest) -> Self {
+        let entry_flows = manifest
+            .flows
+            .iter()
+            .map(|flow| flow.id.as_str().to_string())
+            .collect::<Vec<_>>();
         Self {
-            pack_id: manifest.meta.pack_id.clone(),
-            version: manifest.meta.version.to_string(),
+            pack_id: manifest.pack_id.as_str().to_string(),
+            version: manifest.version.to_string(),
             entry_flows,
         }
-    }
-}
-
-fn build_stub_flow_ir(flow_id: &str, flow_type: &str) -> FlowIR {
-    let mut nodes = IndexMap::new();
-    nodes.insert(
-        "complete".into(),
-        NodeIR {
-            component: "component.exec".into(),
-            payload_expr: serde_json::json!({
-                "component": "qa.process",
-                "operation": "process",
-                "input": {
-                    "status": "done",
-                    "flow_id": flow_id,
-                }
-            }),
-            routes: vec![RouteIR {
-                to: None,
-                out: true,
-            }],
-        },
-    );
-    FlowIR {
-        id: flow_id.to_string(),
-        flow_type: flow_type.to_string(),
-        start: Some("complete".into()),
-        parameters: Value::Object(Default::default()),
-        nodes,
     }
 }
 

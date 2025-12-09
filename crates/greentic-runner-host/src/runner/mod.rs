@@ -7,6 +7,7 @@ pub mod adapt_webex;
 pub mod adapt_webhook;
 pub mod adapt_whatsapp;
 pub mod engine;
+pub mod flow_adapter;
 pub mod ingress_util;
 pub mod mocks;
 

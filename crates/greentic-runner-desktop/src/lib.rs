@@ -245,7 +245,12 @@ async fn run_pack_async(pack_path: &Path, opts: RunOptions) -> Result<RunResult>
     let mut pack_load: Option<PackLoad> = None;
     match open_pack(&pack_path, to_reader_policy(opts.signing)) {
         Ok(load) => {
-            recorder.update_pack_metadata(PackMetadata::from_manifest(&load.manifest));
+            let meta = &load.manifest.meta;
+            recorder.update_pack_metadata(PackMetadata {
+                pack_id: meta.pack_id.clone(),
+                version: meta.version.to_string(),
+                entry_flows: meta.entry_flows.clone(),
+            });
             pack_load = Some(load);
         }
         Err(err) => {

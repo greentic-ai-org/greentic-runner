@@ -1,16 +1,26 @@
 use std::collections::HashMap;
+use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
+use greentic_flow::flow_bundle::load_and_validate_bundle_with_flow;
 use greentic_runner_host::config::{
     FlowRetryConfig, HostConfig, RateLimits, SecretsPolicy, WebhookPolicy,
 };
 use greentic_runner_host::pack::PackRuntime;
 use greentic_runner_host::wasi::RunnerWasiPolicy;
+use greentic_types::{
+    ComponentCapabilities, ComponentManifest, ComponentProfiles, FlowKind, PackFlowEntry, PackKind,
+    PackManifest, ResourceHints, encode_pack_manifest,
+};
 use once_cell::sync::Lazy;
+use semver::Version;
 use serde_json::json;
 use std::path::Path;
+use tempfile::TempDir;
+use zip::ZipWriter;
+use zip::write::FileOptions;
 
 fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -34,6 +44,80 @@ fn host_config(bindings_path: &Path) -> HostConfig {
         oauth: None,
         mocks: None,
     }
+}
+
+fn build_pack(pack_path: &Path) -> Result<()> {
+    let fixtures = workspace_root().join("tests/fixtures/packs/runner-components");
+    let flow_yaml =
+        std::fs::read_to_string(fixtures.join("flows/demo.yaml")).context("read flow yaml")?;
+    let (_bundle, flow) = load_and_validate_bundle_with_flow(&flow_yaml, None)?;
+
+    let manifest = PackManifest {
+        schema_version: "1.0".into(),
+        pack_id: "runner.components.test".parse()?,
+        version: Version::parse("0.0.0")?,
+        kind: PackKind::Application,
+        publisher: "test".into(),
+        components: vec![
+            ComponentManifest {
+                id: "qa.process".parse()?,
+                version: Version::parse("0.1.0")?,
+                supports: vec![FlowKind::Messaging],
+                world: "greentic:component@0.4.0".into(),
+                profiles: ComponentProfiles::default(),
+                capabilities: ComponentCapabilities::default(),
+                configurators: None,
+                operations: Vec::new(),
+                config_schema: None,
+                resources: ResourceHints::default(),
+            },
+            ComponentManifest {
+                id: "templating.handlebars".parse()?,
+                version: Version::parse("0.1.0")?,
+                supports: vec![FlowKind::Messaging],
+                world: "greentic:component@0.4.0".into(),
+                profiles: ComponentProfiles::default(),
+                capabilities: ComponentCapabilities::default(),
+                configurators: None,
+                operations: Vec::new(),
+                config_schema: None,
+                resources: ResourceHints::default(),
+            },
+        ],
+        flows: vec![PackFlowEntry {
+            id: flow.id.clone(),
+            kind: flow.kind,
+            flow: flow.clone(),
+            tags: Vec::new(),
+            entrypoints: vec!["default".into()],
+        }],
+        dependencies: Vec::new(),
+        capabilities: Vec::new(),
+        signatures: Default::default(),
+    };
+
+    let mut writer =
+        ZipWriter::new(std::fs::File::create(pack_path).context("create pack archive for test")?);
+    let options: FileOptions<'_, ()> =
+        FileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    let manifest_bytes = encode_pack_manifest(&manifest)?;
+    writer.start_file("manifest.cbor", options)?;
+    writer.write_all(&manifest_bytes)?;
+
+    for (id, file_name) in [
+        ("qa.process", "components/qa_process.wasm"),
+        (
+            "templating.handlebars",
+            "components/templating_handlebars.wasm",
+        ),
+    ] {
+        writer.start_file(format!("components/{id}.wasm"), options)?;
+        let mut file = std::fs::File::open(fixtures.join(file_name))
+            .with_context(|| format!("open component {}", file_name))?;
+        std::io::copy(&mut file, &mut writer)?;
+    }
+    writer.finish().context("finalise test pack")?;
+    Ok(())
 }
 
 fn demo_exec_ctx(node_id: &str) -> greentic_runner_host::component_api::node::ExecCtx {
@@ -65,10 +149,11 @@ static RUNTIME: Lazy<&'static tokio::runtime::Runtime> = Lazy::new(|| {
 #[test]
 fn gtpack_manifest_fast_path_invokes_components() -> Result<()> {
     let rt = *RUNTIME;
-    let pack_root = workspace_root().join("tests/fixtures/packs/runner-components");
-    let gtpack = pack_root.join("runner-components.gtpack");
-    let bindings_path = pack_root.join("bindings.yaml");
+    let temp = TempDir::new()?;
+    let gtpack = temp.path().join("runner-components.gtpack");
+    let bindings_path = temp.path().join("bindings.yaml");
     std::fs::write(&bindings_path, b"tenant: demo")?;
+    build_pack(&gtpack)?;
 
     let config = Arc::new(host_config(&bindings_path));
     let runtime = Arc::new(rt.block_on(PackRuntime::load(
@@ -88,8 +173,11 @@ fn gtpack_manifest_fast_path_invokes_components() -> Result<()> {
     assert_eq!(flows.len(), 1);
     assert_eq!(flows[0].id, "demo.flow");
 
-    let ir = runtime.load_flow_ir("demo.flow")?;
-    assert!(ir.start.is_some());
+    let flow = runtime.load_flow("demo.flow")?;
+    assert!(
+        flow.entrypoints.contains_key("default") || !flow.nodes.is_empty(),
+        "flow should expose an entrypoint or nodes"
+    );
 
     let ctx = demo_exec_ctx("qa");
     let result = rt.block_on(runtime.invoke_component(

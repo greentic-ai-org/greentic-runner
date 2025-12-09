@@ -1,24 +1,27 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use greentic_flow::flow_bundle::load_and_validate_bundle_with_ir;
-use greentic_flow::ir::{FlowIR, NodeIR, RouteIR};
-use greentic_pack::builder::{ComponentArtifact, PackBuilder, PackMeta, Signing};
+use greentic_flow::flow_bundle::load_and_validate_bundle_with_flow;
 use greentic_runner_host::config::{
     FlowRetryConfig, HostConfig, RateLimits, SecretsPolicy, WebhookPolicy,
 };
 use greentic_runner_host::pack::PackRuntime;
 use greentic_runner_host::runner::engine::{FlowContext, FlowEngine, FlowStatus};
+use greentic_runner_host::runner::flow_adapter::{FlowIR, NodeIR, RouteIR};
+use greentic_types::{
+    ComponentCapabilities, ComponentManifest, ComponentProfiles, FlowKind, PackFlowEntry, PackKind,
+    PackManifest, ResourceHints, encode_pack_manifest,
+};
 use once_cell::sync::Lazy;
 use semver::Version;
-use serde_json::Map as JsonMap;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::sync::Arc;
 use tempfile::TempDir;
 use zip::ZipArchive;
+use zip::write::FileOptions;
 
 fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -109,7 +112,7 @@ fn demo_flow_ir() -> FlowIR {
     );
     FlowIR {
         id: "demo.flow".into(),
-        flow_type: "demo".into(),
+        flow_type: "messaging".into(),
         start: Some("qa".into()),
         parameters: serde_json::Value::Object(Default::default()),
         nodes,
@@ -157,48 +160,48 @@ fn build_pack(flow_yaml: &str, pack_path: &Path) -> Result<()> {
             .parent()
             .expect("pack path should have parent for temp dir"),
     )?;
-    let (flow_bundle, _ir) = load_and_validate_bundle_with_ir(flow_yaml, None)?;
-
-    let meta = PackMeta {
-        pack_version: 1,
-        pack_id: "component.exec.test".into(),
+    let (_bundle, flow) = load_and_validate_bundle_with_flow(flow_yaml, None)?;
+    let manifest = PackManifest {
+        schema_version: "1.0".into(),
+        pack_id: "component.exec.test".parse()?,
         version: Version::parse("0.0.0")?,
-        name: "component.exec.test".into(),
-        kind: None,
-        description: None,
-        authors: Vec::new(),
-        license: None,
-        homepage: None,
-        support: None,
-        vendor: None,
-        imports: Vec::new(),
-        entry_flows: vec![flow_bundle.id.clone()],
-        created_at_utc: "1970-01-01T00:00:00Z".into(),
-        events: None,
-        repo: None,
-        messaging: None,
-        interfaces: Vec::new(),
-        annotations: JsonMap::new(),
-        distribution: None,
-        components: Vec::new(),
+        kind: PackKind::Application,
+        publisher: "test".into(),
+        components: vec![ComponentManifest {
+            id: "qa.process".parse()?,
+            version: Version::parse("0.1.0")?,
+            supports: vec![FlowKind::Messaging],
+            world: "greentic:component@0.4.0".into(),
+            profiles: ComponentProfiles::default(),
+            capabilities: ComponentCapabilities::default(),
+            configurators: None,
+            operations: Vec::new(),
+            config_schema: None,
+            resources: ResourceHints::default(),
+        }],
+        flows: vec![PackFlowEntry {
+            id: flow.id.clone(),
+            kind: flow.kind,
+            flow: flow.clone(),
+            tags: Vec::new(),
+            entrypoints: vec!["default".into()],
+        }],
+        dependencies: Vec::new(),
+        capabilities: Vec::new(),
+        signatures: Default::default(),
     };
 
-    let pack_builder = PackBuilder::new(meta)
-        .with_flow(flow_bundle)
-        .with_component(ComponentArtifact {
-            name: "qa.process".into(),
-            version: Version::parse("0.1.0")?,
-            wasm_path: component_path,
-            schema_json: None,
-            manifest_json: None,
-            capabilities: None,
-            world: Some("greentic:component@0.4.0".into()),
-            hash_blake3: None,
-        });
-    pack_builder
-        .with_signing(Signing::Dev)
-        .build(pack_path)
-        .context("build test pack")?;
+    let mut zip = zip::ZipWriter::new(File::create(pack_path).context("create pack archive")?);
+    let options: FileOptions<'_, ()> =
+        FileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    let manifest_bytes = encode_pack_manifest(&manifest)?;
+    zip.start_file("manifest.cbor", options)?;
+    zip.write_all(&manifest_bytes)?;
+
+    zip.start_file("components/qa.process.wasm", options)?;
+    let mut comp_file = File::open(&component_path)?;
+    std::io::copy(&mut comp_file, &mut zip)?;
+    zip.finish().context("finalise pack archive")?;
     Ok(())
 }
 
@@ -244,7 +247,7 @@ fn exec_node_uses_inner_component_artifact() -> Result<()> {
     // Build a pack whose flow uses component.exec to call qa.process.
     let flow_yaml = r#"
 id: exec.flow
-type: demo
+type: messaging
 start: exec
 nodes:
   exec:
@@ -321,7 +324,7 @@ fn emit_log_is_builtin_not_pack_component() -> Result<()> {
 
     let flow_yaml = r#"
 id: emit.flow
-type: demo
+type: messaging
 start: exec
 nodes:
   exec:

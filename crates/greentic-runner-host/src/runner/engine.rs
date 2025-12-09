@@ -1,12 +1,12 @@
 use std::collections::HashMap;
 use std::env;
 use std::error::Error as StdError;
+use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
 use crate::component_api::node::{ExecCtx as ComponentExecCtx, TenantCtx as ComponentTenantCtx};
 use anyhow::{Context, Result, anyhow, bail};
-use greentic_flow::ir::{FlowIR, NodeIR, RouteIR};
 use indexmap::IndexMap;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
@@ -17,12 +17,13 @@ use super::mocks::MockLayer;
 use crate::config::{FlowRetryConfig, HostConfig};
 use crate::pack::{FlowDescriptor, PackRuntime};
 use crate::telemetry::{FlowSpanAttributes, annotate_span, backoff_delay_ms, set_flow_context};
+use greentic_types::{Flow, Node, NodeId, Routing};
 
 pub struct FlowEngine {
     packs: Vec<Arc<PackRuntime>>,
     flows: Vec<FlowDescriptor>,
     flow_sources: HashMap<String, usize>,
-    flow_ir: RwLock<HashMap<String, HostFlowIR>>,
+    flow_cache: RwLock<HashMap<String, HostFlow>>,
     default_env: String,
 }
 
@@ -52,13 +53,10 @@ pub struct FlowExecution {
 }
 
 #[derive(Clone, Debug)]
-#[allow(dead_code)]
-struct HostFlowIR {
+struct HostFlow {
     id: String,
-    flow_type: String,
-    start: Option<String>,
-    parameters: Value,
-    nodes: IndexMap<String, HostNode>,
+    start: Option<NodeId>,
+    nodes: IndexMap<NodeId, HostNode>,
 }
 
 #[derive(Clone, Debug)]
@@ -67,7 +65,7 @@ pub struct HostNode {
     /// Backwards-compatible component label for observers/transcript.
     pub component: String,
     payload_expr: Value,
-    routes: Vec<RouteIR>,
+    routing: Routing,
 }
 
 #[derive(Clone, Debug)]
@@ -121,15 +119,15 @@ impl FlowEngine {
             }
         }
 
-        let mut ir_map = HashMap::new();
+        let mut flow_map = HashMap::new();
         for flow in &descriptors {
             if let Some(&pack_idx) = flow_sources.get(&flow.id) {
                 let pack_clone = Arc::clone(&packs[pack_idx]);
                 let flow_id = flow.id.clone();
                 let task_flow_id = flow_id.clone();
-                match task::spawn_blocking(move || pack_clone.load_flow_ir(&task_flow_id)).await {
-                    Ok(Ok(ir)) => {
-                        ir_map.insert(flow_id, HostFlowIR::from(ir));
+                match task::spawn_blocking(move || pack_clone.load_flow(&task_flow_id)).await {
+                    Ok(Ok(flow)) => {
+                        flow_map.insert(flow_id, HostFlow::from(flow));
                     }
                     Ok(Err(err)) => {
                         tracing::warn!(flow_id = %flow.id, error = %err, "failed to load flow metadata");
@@ -145,14 +143,14 @@ impl FlowEngine {
             packs,
             flows: descriptors,
             flow_sources,
-            flow_ir: RwLock::new(ir_map),
+            flow_cache: RwLock::new(flow_map),
             default_env: env::var("GREENTIC_ENV").unwrap_or_else(|_| "local".to_string()),
         })
     }
 
-    async fn get_or_load_flow_ir(&self, flow_id: &str) -> Result<HostFlowIR> {
-        if let Some(ir) = self.flow_ir.read().get(flow_id).cloned() {
-            return Ok(ir);
+    async fn get_or_load_flow(&self, flow_id: &str) -> Result<HostFlow> {
+        if let Some(flow) = self.flow_cache.read().get(flow_id).cloned() {
+            return Ok(flow);
         }
 
         let pack_idx = *self
@@ -162,14 +160,14 @@ impl FlowEngine {
         let pack = Arc::clone(&self.packs[pack_idx]);
         let flow_id_owned = flow_id.to_string();
         let task_flow_id = flow_id_owned.clone();
-        let ir = task::spawn_blocking(move || pack.load_flow_ir(&task_flow_id))
+        let flow = task::spawn_blocking(move || pack.load_flow(&task_flow_id))
             .await
             .context("failed to join flow metadata task")??;
-        let host_ir = HostFlowIR::from(ir);
-        self.flow_ir
+        let host_flow = HostFlow::from(flow);
+        self.flow_cache
             .write()
-            .insert(flow_id_owned.clone(), host_ir.clone());
-        Ok(host_ir)
+            .insert(flow_id_owned.clone(), host_flow.clone());
+        Ok(host_flow)
     }
 
     pub async fn execute(&self, ctx: FlowContext<'_>, input: Value) -> Result<FlowExecution> {
@@ -243,7 +241,7 @@ impl FlowEngine {
                 ctx.flow_id
             );
         }
-        let flow_ir = self.get_or_load_flow_ir(ctx.flow_id).await?;
+        let flow_ir = self.get_or_load_flow(ctx.flow_id).await?;
         let mut state = snapshot.state;
         state.replace_input(input);
         self.drive_flow(&ctx, flow_ir, state, Some(snapshot.next_node))
@@ -251,7 +249,7 @@ impl FlowEngine {
     }
 
     async fn execute_once(&self, ctx: &FlowContext<'_>, input: Value) -> Result<FlowExecution> {
-        let flow_ir = self.get_or_load_flow_ir(ctx.flow_id).await?;
+        let flow_ir = self.get_or_load_flow(ctx.flow_id).await?;
         let state = ExecutionState::new(input);
         self.drive_flow(ctx, flow_ir, state, None).await
     }
@@ -259,32 +257,33 @@ impl FlowEngine {
     async fn drive_flow(
         &self,
         ctx: &FlowContext<'_>,
-        flow_ir: HostFlowIR,
+        flow_ir: HostFlow,
         mut state: ExecutionState,
         resume_from: Option<String>,
     ) -> Result<FlowExecution> {
-        let mut current = flow_ir
-            .start
-            .clone()
-            .or_else(|| flow_ir.nodes.keys().next().cloned())
-            .with_context(|| format!("flow {} has no start node", flow_ir.id))?;
-        if let Some(resume) = resume_from {
-            current = resume;
-        }
+        let mut current = match resume_from {
+            Some(node) => NodeId::from_str(&node)
+                .with_context(|| format!("invalid resume node id `{node}`"))?,
+            None => flow_ir
+                .start
+                .clone()
+                .or_else(|| flow_ir.nodes.keys().next().cloned())
+                .with_context(|| format!("flow {} has no start node", flow_ir.id))?,
+        };
         let mut final_payload = None;
 
         loop {
             let node = flow_ir
                 .nodes
                 .get(&current)
-                .with_context(|| format!("node {current} not found"))?;
+                .with_context(|| format!("node {} not found", current.as_str()))?;
 
             let payload = node.payload_expr.clone();
             let observed_payload = payload.clone();
             let node_id = current.clone();
             let event = NodeEvent {
                 context: ctx,
-                node_id: &node_id,
+                node_id: node_id.as_str(),
                 node,
                 payload: &observed_payload,
             };
@@ -295,34 +294,38 @@ impl FlowEngine {
                 output,
                 wait_reason,
             } = self
-                .dispatch_node(ctx, &current, node, &mut state, payload)
+                .dispatch_node(ctx, node_id.as_str(), node, &mut state, payload)
                 .await?;
 
-            state.nodes.insert(current.clone(), output.clone());
+            state.nodes.insert(node_id.clone().into(), output.clone());
 
-            let mut next = None;
-            let mut should_exit = false;
-            for route in &node.routes {
-                if route.out || matches!(route.to.as_deref(), Some("out")) {
-                    final_payload = Some(output.payload.clone());
-                    should_exit = true;
-                    break;
+            let (next, should_exit) = match &node.routing {
+                Routing::Next { node_id } => (Some(node_id.clone()), false),
+                Routing::End | Routing::Reply => (None, true),
+                Routing::Branch { default, .. } => (default.clone(), default.is_none()),
+                Routing::Custom(raw) => {
+                    tracing::warn!(
+                        flow_id = %flow_ir.id,
+                        node_id = %node_id,
+                        routing = ?raw,
+                        "unsupported routing; terminating flow"
+                    );
+                    (None, true)
                 }
-                if let Some(to) = &route.to {
-                    next = Some(to.clone());
-                    break;
-                }
-            }
+            };
 
             if let Some(wait_reason) = wait_reason {
                 let resume_target = next.clone().ok_or_else(|| {
-                    anyhow!("session.wait node {current} requires a non-empty route")
+                    anyhow!(
+                        "session.wait node {} requires a non-empty route",
+                        current.as_str()
+                    )
                 })?;
                 let mut snapshot_state = state.clone();
                 snapshot_state.clear_egress();
                 let snapshot = FlowSnapshot {
                     flow_id: ctx.flow_id.to_string(),
-                    next_node: resume_target,
+                    next_node: resume_target.as_str().to_string(),
                     state: snapshot_state,
                 };
                 let output_value = state.clone().finalize_with(None);
@@ -336,6 +339,7 @@ impl FlowEngine {
             }
 
             if should_exit {
+                final_payload = Some(output.payload.clone());
                 break;
             }
 
@@ -664,28 +668,32 @@ fn extract_wait_reason(payload: &Value) -> Option<String> {
     }
 }
 
-impl From<FlowIR> for HostFlowIR {
-    fn from(value: FlowIR) -> Self {
-        let nodes = value
-            .nodes
-            .into_iter()
-            .map(|(id, node)| (id, HostNode::from(node)))
-            .collect();
+impl From<Flow> for HostFlow {
+    fn from(value: Flow) -> Self {
+        let mut nodes = IndexMap::new();
+        for (id, node) in value.nodes {
+            nodes.insert(id.clone(), HostNode::from(node));
+        }
+        let start = value
+            .entrypoints
+            .get("default")
+            .and_then(Value::as_str)
+            .and_then(|id| NodeId::from_str(id).ok())
+            .or_else(|| nodes.keys().next().cloned());
         Self {
-            id: value.id,
-            flow_type: value.flow_type,
-            start: value.start,
-            parameters: value.parameters,
+            id: value.id.as_str().to_string(),
+            start,
             nodes,
         }
     }
 }
 
-impl From<NodeIR> for HostNode {
-    fn from(node: NodeIR) -> Self {
-        let kind = match node.component.as_str() {
+impl From<Node> for HostNode {
+    fn from(node: Node) -> Self {
+        let component_ref = node.component.id.as_str().to_string();
+        let kind = match component_ref.as_str() {
             "component.exec" => {
-                let target = extract_target_component(&node.payload_expr)
+                let target = extract_target_component(&node.input.mapping)
                     .unwrap_or_else(|| "component.exec".to_string());
                 if target.starts_with("emit.") {
                     NodeKind::BuiltinEmit {
@@ -714,14 +722,14 @@ impl From<NodeIR> for HostNode {
             NodeKind::Wait => "session.wait".to_string(),
         };
         let payload_expr = match kind {
-            NodeKind::BuiltinEmit { .. } => extract_emit_payload(&node.payload_expr),
-            _ => node.payload_expr.clone(),
+            NodeKind::BuiltinEmit { .. } => extract_emit_payload(&node.input.mapping),
+            _ => node.input.mapping.clone(),
         };
         Self {
             kind,
             component: component_label,
             payload_expr,
-            routes: node.routes,
+            routing: node.routing,
         }
     }
 }

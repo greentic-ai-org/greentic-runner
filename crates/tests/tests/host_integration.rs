@@ -1,15 +1,24 @@
 use std::fs;
 use std::future::Future;
+use std::io::{self, Write};
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
+use greentic_flow::flow_bundle::load_and_validate_bundle_with_flow;
 use greentic_runner_host::watcher;
 use greentic_runner_host::{Activity, HostBuilder, HostConfig, RunnerHost};
+use greentic_types::{
+    ComponentCapabilities, ComponentManifest, ComponentProfiles, FlowKind, PackFlowEntry, PackKind,
+    PackManifest, ResourceHints, encode_pack_manifest,
+};
 use runner_core::env::PackConfig;
+use semver::Version;
 use serial_test::serial;
 use tempfile::TempDir;
 use tokio::time::sleep;
+use zip::ZipWriter;
+use zip::write::FileOptions;
 
 #[tokio::test]
 #[serial]
@@ -22,7 +31,9 @@ async fn host_executes_demo_pack_flow() -> Result<()> {
     let host = HostBuilder::new().with_config(config).build()?;
     host.start().await?;
 
-    let pack_path = fixture_path("tests/fixtures/packs/runner-components/runner-components.gtpack");
+    let _pack_temp = TempDir::new()?;
+    let pack_path = _pack_temp.path().join("runner-components.gtpack");
+    build_runner_components_pack(&pack_path)?;
     host.load_pack("acme", pack_path.as_path()).await?;
 
     let activity = Activity::text("hello from integration")
@@ -199,6 +210,81 @@ fn fixture_path(relative: &str) -> std::path::PathBuf {
         .join("..")
         .join("..")
         .join(relative)
+}
+
+fn build_runner_components_pack(pack_path: &std::path::Path) -> Result<()> {
+    let fixtures = fixture_path("tests/fixtures/packs/runner-components");
+    let flow_yaml =
+        std::fs::read_to_string(fixtures.join("flows/demo.yaml")).context("read flow yaml")?;
+    let (_bundle, flow) = load_and_validate_bundle_with_flow(&flow_yaml, None)?;
+
+    let manifest = PackManifest {
+        schema_version: "1.0".into(),
+        pack_id: "runner.components.test".parse()?,
+        version: Version::parse("0.0.0")?,
+        kind: PackKind::Application,
+        publisher: "test".into(),
+        components: vec![
+            ComponentManifest {
+                id: "qa.process".parse()?,
+                version: Version::parse("0.1.0")?,
+                supports: vec![FlowKind::Messaging],
+                world: "greentic:component@0.4.0".into(),
+                profiles: ComponentProfiles::default(),
+                capabilities: ComponentCapabilities::default(),
+                configurators: None,
+                operations: Vec::new(),
+                config_schema: None,
+                resources: ResourceHints::default(),
+            },
+            ComponentManifest {
+                id: "templating.handlebars".parse()?,
+                version: Version::parse("0.1.0")?,
+                supports: vec![FlowKind::Messaging],
+                world: "greentic:component@0.4.0".into(),
+                profiles: ComponentProfiles::default(),
+                capabilities: ComponentCapabilities::default(),
+                configurators: None,
+                operations: Vec::new(),
+                config_schema: None,
+                resources: ResourceHints::default(),
+            },
+        ],
+        flows: vec![PackFlowEntry {
+            id: flow.id.clone(),
+            kind: flow.kind,
+            flow: flow.clone(),
+            tags: Vec::new(),
+            entrypoints: vec!["default".into()],
+        }],
+        dependencies: Vec::new(),
+        capabilities: Vec::new(),
+        signatures: Default::default(),
+    };
+
+    let mut writer = ZipWriter::new(
+        std::fs::File::create(pack_path).context("create pack archive for integration test")?,
+    );
+    let options: FileOptions<'_, ()> =
+        FileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    let manifest_bytes = encode_pack_manifest(&manifest)?;
+    writer.start_file("manifest.cbor", options)?;
+    writer.write_all(&manifest_bytes)?;
+
+    for (id, file_name) in [
+        ("qa.process", "components/qa_process.wasm"),
+        (
+            "templating.handlebars",
+            "components/templating_handlebars.wasm",
+        ),
+    ] {
+        writer.start_file(format!("components/{id}.wasm"), options)?;
+        let mut file = std::fs::File::open(fixtures.join(file_name))
+            .with_context(|| format!("open component {}", file_name))?;
+        io::copy(&mut file, &mut writer)?;
+    }
+    writer.finish().context("finalise integration test pack")?;
+    Ok(())
 }
 
 fn write_overlay_index(path: &std::path::Path, include_overlay: bool) -> Result<()> {

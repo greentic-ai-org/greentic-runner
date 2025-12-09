@@ -27,7 +27,6 @@ greentic-flow.workspace = true
 greentic-interfaces-host.workspace = true
 greentic-interfaces-wasmtime.workspace = true
 greentic-interfaces.workspace = true
-greentic-pack.workspace = true
 greentic-types.workspace = true
 greentic-session.workspace = true
 greentic-state.workspace = true

@@ -270,7 +270,6 @@ impl FlowEngine {
                 .or_else(|| flow_ir.nodes.keys().next().cloned())
                 .with_context(|| format!("flow {} has no start node", flow_ir.id))?,
         };
-        let mut final_payload = None;
 
         loop {
             let node = flow_ir
@@ -339,21 +338,20 @@ impl FlowEngine {
             }
 
             if should_exit {
-                final_payload = Some(output.payload.clone());
-                break;
+                return Ok(FlowExecution::completed(
+                    state.finalize_with(Some(output.payload.clone())),
+                ));
             }
 
             match next {
                 Some(n) => current = n,
                 None => {
-                    final_payload = Some(output.payload.clone());
-                    break;
+                    return Ok(FlowExecution::completed(
+                        state.finalize_with(Some(output.payload.clone())),
+                    ));
                 }
             }
         }
-
-        let payload = final_payload.unwrap_or(Value::Null);
-        Ok(FlowExecution::completed(state.finalize_with(Some(payload))))
     }
 
     async fn dispatch_node(

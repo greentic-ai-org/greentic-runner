@@ -1,6 +1,8 @@
 use std::fs;
 use std::future::Future;
 use std::io::{self, Write};
+use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -271,16 +273,11 @@ fn build_runner_components_pack(pack_path: &std::path::Path) -> Result<()> {
     writer.start_file("manifest.cbor", options)?;
     writer.write_all(&manifest_bytes)?;
 
-    for (id, file_name) in [
-        ("qa.process", "components/qa_process.wasm"),
-        (
-            "templating.handlebars",
-            "components/templating_handlebars.wasm",
-        ),
-    ] {
+    let components = fixture_components(&fixtures)?;
+    for (id, artifact) in components {
         writer.start_file(format!("components/{id}.wasm"), options)?;
-        let mut file = std::fs::File::open(fixtures.join(file_name))
-            .with_context(|| format!("open component {}", file_name))?;
+        let mut file = std::fs::File::open(&artifact as &Path)
+            .with_context(|| format!("open component {}", artifact.display()))?;
         io::copy(&mut file, &mut writer)?;
     }
     writer.finish().context("finalise integration test pack")?;
@@ -313,6 +310,63 @@ fn write_overlay_index(path: &std::path::Path, include_overlay: bool) -> Result<
     });
     fs::write(path, serde_json::to_vec_pretty(&index)?)?;
     Ok(())
+}
+
+fn fixture_components(fixtures_root: &Path) -> Result<Vec<(String, PathBuf)>> {
+    let crates_root = fixture_path("tests/fixtures/runner-components");
+    let target_root = crates_root.join("target-test");
+    let components = [
+        ("qa.process", "qa_process"),
+        ("templating.handlebars", "templating_handlebars"),
+    ];
+    let mut sources = Vec::new();
+
+    for (id, crate_name) in components {
+        let prebuilt = fixtures_root
+            .join("components")
+            .join(format!("{crate_name}.wasm"));
+        if prebuilt.exists() {
+            sources.push((id.to_string(), prebuilt));
+            continue;
+        }
+
+        let crate_dir = crates_root.join(crate_name);
+        let status = Command::new("cargo")
+            .env("CARGO_NET_OFFLINE", "true")
+            .env("CARGO_TARGET_DIR", &target_root)
+            .current_dir(&crate_dir)
+            .args([
+                "build",
+                "--offline",
+                "--target",
+                "wasm32-wasip2",
+                "--release",
+            ])
+            .status()
+            .with_context(|| format!("failed to build component crate {}", crate_name))?;
+        if !status.success() {
+            anyhow::bail!("component build failed for {}", crate_name);
+        }
+
+        let base = target_root.join("wasm32-wasip2").join("release");
+        let candidates = [
+            base.join(format!("{crate_name}.wasm")),
+            base.join("deps").join(format!("{crate_name}.wasm")),
+        ];
+
+        let artifact = candidates
+            .into_iter()
+            .find(|path| path.exists())
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "component artifact not found after build for {}",
+                    crate_name
+                )
+            })?;
+        sources.push((id.to_string(), artifact));
+    }
+
+    Ok(sources)
 }
 
 async fn tenant_overlay_count(host: &Arc<RunnerHost>, tenant: &str) -> Option<usize> {

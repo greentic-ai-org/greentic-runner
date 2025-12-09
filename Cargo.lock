@@ -1403,7 +1403,7 @@ dependencies = [
 
 [[package]]
 name = "greentic-runner"
-version = "0.4.9"
+version = "0.4.10"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1430,7 +1430,7 @@ dependencies = [
 
 [[package]]
 name = "greentic-runner-desktop"
-version = "0.4.9"
+version = "0.4.10"
 dependencies = [
  "anyhow",
  "greentic-pack",
@@ -1449,7 +1449,7 @@ dependencies = [
 
 [[package]]
 name = "greentic-runner-host"
-version = "0.4.9"
+version = "0.4.10"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -1464,6 +1464,7 @@ dependencies = [
  "greentic-interfaces",
  "greentic-interfaces-host",
  "greentic-interfaces-wasmtime",
+ "greentic-pack",
  "greentic-secrets",
  "greentic-session",
  "greentic-state",
@@ -1502,7 +1503,7 @@ dependencies = [
 
 [[package]]
 name = "greentic-runner-tests"
-version = "0.4.9"
+version = "0.4.10"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3055,7 +3056,7 @@ dependencies = [
 
 [[package]]
 name = "runner-core"
-version = "0.4.9"
+version = "0.4.10"
 dependencies = [
  "anyhow",
  "base64",

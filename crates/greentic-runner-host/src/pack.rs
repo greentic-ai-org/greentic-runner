@@ -21,6 +21,7 @@ use greentic_interfaces_host::host_import::v0_2::greentic::host_import::imports:
 use greentic_interfaces_host::host_import::v0_6::{
     self as host_import_v0_6, iface_types, state, types,
 };
+use greentic_pack::builder as legacy_pack;
 use greentic_session::SessionKey as StoreSessionKey;
 use greentic_types::{
     EnvId, Flow, FlowId, SessionCursor as StoreSessionCursor, SessionData,
@@ -39,7 +40,7 @@ use wasmparser::{Parser, Payload};
 use wasmtime::StoreContextMut;
 use zip::ZipArchive;
 
-use crate::runner::flow_adapter::{FlowIR, flow_ir_to_flow};
+use crate::runner::flow_adapter::{FlowIR, flow_doc_to_ir, flow_ir_to_flow};
 use crate::runner::mocks::{HttpDecision, HttpMockRequest, HttpMockResponse, MockLayer};
 
 use crate::config::HostConfig;
@@ -51,7 +52,6 @@ use crate::wasi::RunnerWasiPolicy;
 use tracing::warn;
 use wasmtime_wasi::{WasiCtx, WasiCtxView, WasiView};
 
-#[cfg(test)]
 use greentic_flow::model::FlowDoc;
 
 #[allow(dead_code)]
@@ -64,6 +64,7 @@ pub struct PackRuntime {
     engine: Engine,
     metadata: PackMetadata,
     manifest: Option<greentic_types::PackManifest>,
+    legacy_manifest: Option<Box<legacy_pack::PackManifest>>,
     mocks: Option<Arc<MockLayer>>,
     flows: Option<PackFlows>,
     components: HashMap<String, PackComponent>,
@@ -85,9 +86,14 @@ struct PackComponent {
 }
 
 fn build_blocking_client() -> BlockingClient {
-    std::thread::spawn(|| BlockingClient::builder().build().expect("blocking client"))
-        .join()
-        .expect("client build thread panicked")
+    std::thread::spawn(|| {
+        BlockingClient::builder()
+            .no_proxy()
+            .build()
+            .expect("blocking client")
+    })
+    .join()
+    .expect("client build thread panicked")
 }
 
 fn normalize_pack_path(path: &Path) -> Result<(PathBuf, PathBuf)> {
@@ -262,15 +268,85 @@ impl HostState {
     }
 }
 
-fn load_manifest_and_flows(path: &Path) -> Result<(greentic_types::PackManifest, PackFlows)> {
+enum ManifestLoad {
+    New {
+        manifest: Box<greentic_types::PackManifest>,
+        flows: PackFlows,
+    },
+    Legacy {
+        manifest: Box<legacy_pack::PackManifest>,
+        flows: PackFlows,
+    },
+}
+
+fn load_manifest_and_flows(path: &Path) -> Result<ManifestLoad> {
     let mut archive = ZipArchive::new(File::open(path)?)
         .with_context(|| format!("{} is not a valid gtpack", path.display()))?;
     let bytes = read_entry(&mut archive, "manifest.cbor")
         .with_context(|| format!("missing manifest.cbor in {}", path.display()))?;
-    let manifest = decode_pack_manifest(&bytes)
-        .context("failed to decode pack manifest from manifest.cbor")?;
-    let cache = PackFlows::from_manifest(manifest.clone());
-    Ok((manifest, cache))
+    match decode_pack_manifest(&bytes) {
+        Ok(manifest) => {
+            let cache = PackFlows::from_manifest(manifest.clone());
+            Ok(ManifestLoad::New {
+                manifest: Box::new(manifest),
+                flows: cache,
+            })
+        }
+        Err(err) => {
+            tracing::debug!(error = %err, pack = %path.display(), "decode_pack_manifest failed; trying legacy manifest");
+            // Fall back to legacy pack manifest
+            let legacy: legacy_pack::PackManifest = serde_cbor::from_slice(&bytes)
+                .context("failed to decode legacy pack manifest from manifest.cbor")?;
+            let flows = load_legacy_flows(&mut archive, &legacy)?;
+            Ok(ManifestLoad::Legacy {
+                manifest: Box::new(legacy),
+                flows,
+            })
+        }
+    }
+}
+
+fn load_legacy_flows(
+    archive: &mut ZipArchive<File>,
+    manifest: &legacy_pack::PackManifest,
+) -> Result<PackFlows> {
+    let mut flows = HashMap::new();
+    let mut descriptors = Vec::new();
+
+    for entry in &manifest.flows {
+        let bytes = read_entry(archive, &entry.file_json)
+            .with_context(|| format!("missing flow json {}", entry.file_json))?;
+        let doc: FlowDoc = serde_json::from_slice(&bytes)
+            .with_context(|| format!("failed to decode flow doc {}", entry.file_json))?;
+        let normalized = normalize_flow_doc(doc);
+        let flow_ir = flow_doc_to_ir(normalized)?;
+        let flow = flow_ir_to_flow(flow_ir)?;
+
+        descriptors.push(FlowDescriptor {
+            id: entry.id.clone(),
+            flow_type: entry.kind.clone(),
+            profile: manifest.meta.pack_id.clone(),
+            version: manifest.meta.version.to_string(),
+            description: None,
+        });
+        flows.insert(entry.id.clone(), flow);
+    }
+
+    let mut entry_flows = manifest.meta.entry_flows.clone();
+    if entry_flows.is_empty() {
+        entry_flows = manifest.flows.iter().map(|f| f.id.clone()).collect();
+    }
+    let metadata = PackMetadata {
+        pack_id: manifest.meta.pack_id.clone(),
+        version: manifest.meta.version.to_string(),
+        entry_flows,
+    };
+
+    Ok(PackFlows {
+        descriptors,
+        flows,
+        metadata,
+    })
 }
 
 pub struct ComponentState {
@@ -833,11 +909,23 @@ impl PackRuntime {
         let mut metadata = PackMetadata::from_wasm(&wasm_bytes)
             .unwrap_or_else(|| PackMetadata::fallback(&safe_path));
         let mut manifest = None;
+        let mut legacy_manifest: Option<Box<legacy_pack::PackManifest>> = None;
         let flows = if let Some(archive_path) = archive_hint {
             match load_manifest_and_flows(archive_path) {
-                Ok((m, cache)) => {
+                Ok(ManifestLoad::New {
+                    manifest: m,
+                    flows: cache,
+                }) => {
                     metadata = cache.metadata.clone();
-                    manifest = Some(m);
+                    manifest = Some(*m);
+                    Some(cache)
+                }
+                Ok(ManifestLoad::Legacy {
+                    manifest: m,
+                    flows: cache,
+                }) => {
+                    metadata = cache.metadata.clone();
+                    legacy_manifest = Some(m);
                     Some(cache)
                 }
                 Err(err) => {
@@ -849,12 +937,24 @@ impl PackRuntime {
             None
         };
         let components = if let Some(archive_path) = archive_hint {
-            match load_components_from_archive(&engine, archive_path, manifest.as_ref()) {
-                Ok(map) => map,
-                Err(err) => {
-                    warn!(error = %err, pack = %archive_path.display(), "failed to load components from archive");
-                    HashMap::new()
+            if let Some(new_manifest) = manifest.as_ref() {
+                match load_components_from_archive(&engine, archive_path, Some(new_manifest)) {
+                    Ok(map) => map,
+                    Err(err) => {
+                        warn!(error = %err, pack = %archive_path.display(), "failed to load components from archive");
+                        HashMap::new()
+                    }
                 }
+            } else if let Some(legacy) = legacy_manifest.as_ref() {
+                match load_legacy_components_from_archive(&engine, archive_path, legacy) {
+                    Ok(map) => map,
+                    Err(err) => {
+                        warn!(error = %err, pack = %archive_path.display(), "failed to load components from archive");
+                        HashMap::new()
+                    }
+                }
+            } else {
+                HashMap::new()
             }
         } else if is_component {
             let name = safe_path
@@ -883,6 +983,7 @@ impl PackRuntime {
             engine,
             metadata,
             manifest,
+            legacy_manifest,
             mocks,
             flows,
             components,
@@ -1086,6 +1187,7 @@ impl PackRuntime {
             engine,
             metadata: PackMetadata::fallback(Path::new("component-test")),
             manifest: None,
+            legacy_manifest: None,
             mocks: None,
             flows: Some(flows_cache),
             components: component_map,
@@ -1160,7 +1262,6 @@ fn read_entry(archive: &mut ZipArchive<File>, name: &str) -> Result<Vec<u8>> {
     Ok(buf)
 }
 
-#[cfg(test)]
 fn normalize_flow_doc(mut doc: FlowDoc) -> FlowDoc {
     for node in doc.nodes.values_mut() {
         if node.component.is_empty()
@@ -1189,7 +1290,6 @@ fn normalize_flow_doc(mut doc: FlowDoc) -> FlowDoc {
     doc
 }
 
-#[cfg(test)]
 fn infer_component_exec(
     payload: &Value,
     component_ref: &str,
@@ -1304,6 +1404,31 @@ fn load_components_from_archive(
                 },
             );
         }
+    }
+    Ok(components)
+}
+
+fn load_legacy_components_from_archive(
+    engine: &Engine,
+    path: &Path,
+    manifest: &legacy_pack::PackManifest,
+) -> Result<HashMap<String, PackComponent>> {
+    let mut archive = ZipArchive::new(File::open(path)?)
+        .with_context(|| format!("{} is not a valid gtpack", path.display()))?;
+    let mut components = HashMap::new();
+    for entry in &manifest.components {
+        let bytes = read_entry(&mut archive, &entry.file_wasm)
+            .with_context(|| format!("missing component {}", entry.file_wasm))?;
+        let component = Component::from_binary(engine, &bytes)
+            .with_context(|| format!("failed to compile component {}", entry.name))?;
+        components.insert(
+            entry.name.clone(),
+            PackComponent {
+                name: entry.name.clone(),
+                version: entry.version.to_string(),
+                component,
+            },
+        );
     }
     Ok(components)
 }

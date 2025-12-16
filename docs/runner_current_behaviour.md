@@ -43,7 +43,7 @@
   - `host_integration.rs` – loads demo pack, runs a flow end-to-end via RunnerHost; exercises pack loading and flow execution.
   - `host_wasi_p2_roundtrip.rs` – validates WASI preview2 policy enforcement when instantiating a component.
   - `multiturn.rs`, `webhook_timer.rs` – exercise session/wait/timers via state machine.
-  - `weather_smoke.rs` (ignored) – placeholder for live pack call.
+  - `weather_smoke.rs` (ignored) – env-gated smoke that spawns `greentic-runner` with a user-supplied `.gtpack`/bindings (`WEATHER_PACK_PATH`, optional `WEATHER_BINDINGS_PATH`, `WEATHER_FLOW_ID`, `WEATHER_WEBHOOK_PAYLOAD`, `TELEGRAM_BOT_TOKEN`) and posts to `/webhook/{flow_id}`.
 - Unit tests:
   - `FlowEngine` templating/rendering/finalize tests (`runner/engine.rs`).
   - `StateMachine` pause/resume adapter tests (`engine/state_machine.rs`).

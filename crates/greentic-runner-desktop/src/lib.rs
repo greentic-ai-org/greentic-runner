@@ -250,6 +250,7 @@ async fn run_pack_async(pack_path: &Path, opts: RunOptions) -> Result<RunResult>
                 pack_id: meta.pack_id.clone(),
                 version: meta.version.to_string(),
                 entry_flows: meta.entry_flows.clone(),
+                secret_requirements: Vec::new(),
             });
             pack_load = Some(load);
         }

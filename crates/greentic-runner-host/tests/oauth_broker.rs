@@ -5,8 +5,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result, anyhow};
 use greentic_runner_host::config::HostConfig;
-use greentic_runner_host::imports;
-use greentic_runner_host::pack::{ComponentState, HostState};
+use greentic_runner_host::pack::{self, ComponentState, HostState};
 use greentic_runner_host::runtime_wasmtime::{Component, Engine, Linker, Store};
 use greentic_runner_host::secrets::default_manager;
 use greentic_runner_host::wasi::RunnerWasiPolicy;
@@ -17,10 +16,10 @@ use tempfile::NamedTempFile;
 fn oauth_world_instantiates_when_enabled() -> Result<()> {
     let wasm = build_fixture()?;
     let host_cfg = load_host_config(true)?;
-    instantiate_component(&wasm, host_cfg, true).context("component should instantiate")
+    instantiate_component(&wasm, host_cfg).context("component should instantiate")
 }
 
-fn instantiate_component(wasm: &Path, config: Arc<HostConfig>, oauth_enabled: bool) -> Result<()> {
+fn instantiate_component(wasm: &Path, config: Arc<HostConfig>) -> Result<()> {
     let engine = Engine::default();
     let component = Component::from_file(&engine, wasm)
         .with_context(|| format!("failed to load {}", wasm.display()))?;
@@ -37,7 +36,7 @@ fn instantiate_component(wasm: &Path, config: Arc<HostConfig>, oauth_enabled: bo
     let state = ComponentState::new(host_state, policy)?;
     let mut store = Store::new(&engine, state);
     let mut linker = Linker::new(&engine);
-    imports::register_all(&mut linker, oauth_enabled)?;
+    pack::register_all(&mut linker)?;
     linker
         .instantiate(&mut store, &component)
         .context("component instantiation failed")?;

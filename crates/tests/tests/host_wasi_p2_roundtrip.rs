@@ -4,7 +4,7 @@ use std::process::Command;
 use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
-use greentic_runner_host::imports;
+use greentic_runner_host::pack;
 use greentic_runner_host::pack::{ComponentState, HostState};
 use greentic_runner_host::runtime_wasmtime::{Component, Engine, Linker, Store};
 use greentic_runner_host::secrets::default_manager;
@@ -67,7 +67,7 @@ fn run_component(wasm: &Path, config: Arc<HostConfig>, policy: RunnerWasiPolicy)
     let store_state = ComponentState::new(host_state, Arc::new(policy))?;
     let mut store = Store::new(&engine, store_state);
     let mut linker = Linker::new(&engine);
-    imports::register_all(&mut linker, false)?;
+    pack::register_all(&mut linker)?;
     let instance = linker.instantiate(&mut store, &component)?;
     let run = instance
         .get_typed_func::<(), ()>(&mut store, "run")

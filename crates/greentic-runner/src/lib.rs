@@ -12,8 +12,8 @@ use anyhow::Result;
 
 pub use greentic_runner_host::{
     self as host, Activity, ActivityKind, HostBuilder, HostServer, RunnerConfig, RunnerHost,
-    TenantHandle, config, http, imports, pack, routing, runner, runtime, runtime_wasmtime,
-    telemetry, verify, watcher,
+    TenantHandle, config, http, pack, routing, runner, runtime, runtime_wasmtime, telemetry,
+    verify, watcher,
 };
 
 pub mod desktop {

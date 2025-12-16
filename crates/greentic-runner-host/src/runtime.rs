@@ -23,6 +23,7 @@ use crate::secrets::{DynSecretsManager, read_secret_blocking};
 use crate::storage::session::DynSessionStore;
 use crate::storage::state::DynStateStore;
 use crate::wasi::RunnerWasiPolicy;
+use greentic_types::SecretRequirement;
 
 const TELEGRAM_CACHE_CAPACITY: usize = 1024;
 const WEBHOOK_CACHE_CAPACITY: usize = 256;
@@ -236,6 +237,20 @@ impl TenantRuntime {
 
     pub fn overlay_digests(&self) -> Vec<Option<String>> {
         self.digests.iter().skip(1).cloned().collect()
+    }
+
+    pub fn required_secrets(&self) -> Vec<SecretRequirement> {
+        self.packs
+            .iter()
+            .flat_map(|pack| pack.required_secrets().iter().cloned())
+            .collect()
+    }
+
+    pub fn missing_secrets(&self) -> Vec<SecretRequirement> {
+        self.packs
+            .iter()
+            .flat_map(|pack| pack.missing_secrets(&self.config.tenant_ctx()))
+            .collect()
     }
 
     pub fn telegram_cache(&self) -> &Mutex<LruCache<i64, StatusCode>> {

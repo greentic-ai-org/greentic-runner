@@ -6,6 +6,7 @@ use serde_yaml_bw as serde_yaml;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 
 #[derive(Debug, Clone)]
 pub struct HostConfig {
@@ -162,6 +163,17 @@ impl HostConfig {
             cfg.team = Some(team.clone());
         }
         Some(cfg)
+    }
+
+    /// Derive a tenant context for the current configuration. This is used when
+    /// evaluating scoped requirements (e.g. secrets).
+    pub fn tenant_ctx(&self) -> greentic_types::TenantCtx {
+        let env = std::env::var("GREENTIC_ENV").unwrap_or_else(|_| "local".to_string());
+        let env_id = greentic_types::EnvId::from_str(&env)
+            .unwrap_or_else(|_| greentic_types::EnvId::new("local").expect("local env id"));
+        let tenant_id = greentic_types::TenantId::from_str(&self.tenant)
+            .unwrap_or_else(|_| greentic_types::TenantId::new("local").expect("tenant id"));
+        greentic_types::TenantCtx::new(env_id, tenant_id)
     }
 }
 

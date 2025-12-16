@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -71,6 +71,7 @@ fn build_pack(pack_path: &Path) -> Result<()> {
                 operations: Vec::new(),
                 config_schema: None,
                 resources: ResourceHints::default(),
+                dev_flows: BTreeMap::new(),
             },
             ComponentManifest {
                 id: "templating.handlebars".parse()?,
@@ -83,6 +84,7 @@ fn build_pack(pack_path: &Path) -> Result<()> {
                 operations: Vec::new(),
                 config_schema: None,
                 resources: ResourceHints::default(),
+                dev_flows: BTreeMap::new(),
             },
         ],
         flows: vec![PackFlowEntry {
@@ -95,6 +97,7 @@ fn build_pack(pack_path: &Path) -> Result<()> {
         dependencies: Vec::new(),
         capabilities: Vec::new(),
         signatures: Default::default(),
+        secret_requirements: Vec::new(),
     };
 
     let mut writer =

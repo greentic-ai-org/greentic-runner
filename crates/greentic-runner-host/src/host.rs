@@ -23,7 +23,7 @@ use crate::storage::{
 use crate::wasi::RunnerWasiPolicy;
 
 #[cfg(feature = "telemetry")]
-pub use greentic_telemetry::OtlpConfig as TelemetryCfg;
+pub use greentic_telemetry::TelemetryConfig as TelemetryCfg;
 #[cfg(not(feature = "telemetry"))]
 #[derive(Clone, Debug)]
 pub struct TelemetryCfg;

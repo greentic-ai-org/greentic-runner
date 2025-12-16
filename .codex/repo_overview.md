@@ -33,16 +33,11 @@
 
 ## 3. Work In Progress, TODOs, and Stubs
 - **Location:** `crates/tests/tests/weather_smoke.rs:6`  
-  **Status:** TODO / ignored test  
-  **Short description:** Placeholder to launch the host binary and assert a webhook flow against a live pack + Telegram token.
-- **Location:** `crates/greentic-runner-host/src/pack.rs:868` (fn `run_flow`)  
-  **Status:** Stub  
-  **Short description:** Flow execution dispatch via Wasmtime not implemented; function returns empty JSON.
+  **Status:** Ignored smoke test (env-gated)  
+  **Short description:** Spawns the `greentic-runner` binary against a user-supplied pack + bindings and hits `/webhook/{WEATHER_FLOW_ID}`; requires `WEATHER_PACK_PATH` and optional `WEATHER_BINDINGS_PATH`/`WEATHER_WEBHOOK_PAYLOAD`/`TELEGRAM_BOT_TOKEN`.
 
 ## 4. Broken, Failing, or Conflicting Areas
 - No known broken areas after updating `PackMeta` initializers; `cargo test -p runner-core --tests --examples` now passes.
 
 ## 5. Notes for Future Work
-- Implement `PackRuntime::run_flow` to execute flows directly via Wasmtime.  
-- Flesh out the `weather_smoke` integration test to start the host binary and drive a real webhook flow.  
 - Run the full workspace test suite to confirm broader coverage beyond runner-core.

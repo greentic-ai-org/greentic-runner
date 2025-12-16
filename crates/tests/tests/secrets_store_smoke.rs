@@ -1,0 +1,135 @@
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::sync::Arc;
+
+use anyhow::{Context, Result, anyhow};
+use greentic_runner_host::config::HostConfig;
+use greentic_runner_host::pack::{self, ComponentState, HostState};
+use greentic_runner_host::runtime_wasmtime::{Component, Engine, Linker, Store};
+use greentic_runner_host::secrets::default_manager;
+use greentic_runner_host::wasi::RunnerWasiPolicy;
+use reqwest::blocking::Client as BlockingClient;
+use serde_json::Value;
+use tempfile::TempDir;
+
+#[test]
+fn secrets_store_end_to_end_missing_and_success() -> Result<()> {
+    let wasm = build_fixture_component()?;
+    let config = write_minimal_config()?;
+
+    // Missing secret -> component reports missing.
+    let missing = invoke_component(&wasm, Arc::clone(&config))?;
+    let missing_json: Value = serde_json::from_str(&missing)?;
+    assert_eq!(missing_json["ok"], Value::Bool(false));
+    assert_eq!(missing_json["error"], Value::String("missing".into()));
+
+    // Provide TEST_API_KEY via env -> component observes it.
+    let _secret = EnvGuard::set("TEST_API_KEY", "super-secret");
+    let success = invoke_component(&wasm, config)?;
+    let success_json: Value = serde_json::from_str(&success)?;
+    assert_eq!(success_json["ok"], Value::Bool(true));
+    assert_eq!(success_json["key_present"], Value::Bool(true));
+
+    Ok(())
+}
+
+fn invoke_component(wasm: &Path, config: Arc<HostConfig>) -> Result<String> {
+    let engine = Engine::default();
+    let component =
+        Component::from_file(&engine, wasm).with_context(|| format!("failed to load {wasm:?}"))?;
+    let host_state = HostState::new(
+        Arc::clone(&config),
+        Arc::new(BlockingClient::builder().build()?),
+        None,
+        None,
+        None,
+        default_manager(),
+        None,
+    )?;
+    let policy = Arc::new(RunnerWasiPolicy::default());
+    let mut store = Store::new(&engine, ComponentState::new(host_state, policy)?);
+    let mut linker = Linker::new(&engine);
+    pack::register_all(&mut linker)?;
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .context("component instantiation failed")?;
+    let run = instance
+        .get_typed_func::<(), (String,)>(&mut store, "run")
+        .context("missing run export")?;
+    let (result,) = run
+        .call(&mut store, ())
+        .context("component execution failed")?;
+    Ok(result)
+}
+
+fn build_fixture_component() -> Result<PathBuf> {
+    let component_dir = fixture_path("tests/fixtures/packs/secrets_store_smoke/components");
+    let wasm_path = component_dir.join("echo_secret.wasm");
+    if !wasm_path.exists() {
+        let status = Command::new("bash")
+            .arg("build.sh")
+            .current_dir(&component_dir)
+            .status()
+            .context("failed to run echo-secret build script")?;
+        if !status.success() {
+            return Err(anyhow!("echo-secret build script exited with {status}"));
+        }
+    }
+    Ok(wasm_path)
+}
+
+fn write_minimal_config() -> Result<Arc<HostConfig>> {
+    let temp = TempDir::new()?;
+    let path = temp.path().join("bindings.yaml");
+    let contents = r#"
+tenant: demo
+flow_type_bindings: {}
+rate_limits: {}
+retry: {}
+timers: []
+"#;
+    fs::write(&path, contents)?;
+    let mut cfg = HostConfig::load_from_path(&path).context("load minimal host bindings")?;
+    cfg.secrets_policy = greentic_runner_host::config::SecretsPolicy::allow_all();
+    Ok(Arc::new(cfg))
+}
+
+fn fixture_path(relative: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join(relative)
+}
+
+struct EnvGuard {
+    key: String,
+    prev: Option<String>,
+}
+
+impl EnvGuard {
+    fn set(key: &str, value: &str) -> Self {
+        let prev = std::env::var(key).ok();
+        unsafe {
+            std::env::set_var(key, value);
+        }
+        EnvGuard {
+            key: key.to_string(),
+            prev,
+        }
+    }
+}
+
+impl Drop for EnvGuard {
+    fn drop(&mut self) {
+        if let Some(val) = self.prev.clone() {
+            unsafe {
+                std::env::set_var(&self.key, val);
+            }
+        } else {
+            unsafe {
+                std::env::remove_var(&self.key);
+            }
+        }
+    }
+}

@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -9,23 +9,35 @@ use crate::component_api::component::greentic::component::control::Host as Compo
 use crate::component_api::{
     ComponentPre, control, node::ExecCtx as ComponentExecCtx, node::InvokeResult, node::NodeError,
 };
-use crate::imports::register_all;
 use crate::oauth::{OAuthBrokerConfig, OAuthBrokerHost, OAuthHostContext};
-use crate::runtime_wasmtime::{Component, Engine, Linker, ResourceTable, WasmResult};
+use crate::runtime_wasmtime::{Component, Engine, Linker, ResourceTable};
 use anyhow::{Context, Result, anyhow, bail};
-use greentic_interfaces_host::host_import::v0_2 as host_import_v0_2;
-use greentic_interfaces_host::host_import::v0_2::greentic::host_import::imports::{
-    HttpRequest as LegacyHttpRequest, HttpResponse as LegacyHttpResponse,
-    IfaceError as LegacyIfaceError, TenantCtx as LegacyTenantCtx,
-};
-use greentic_interfaces_host::host_import::v0_6::{
-    self as host_import_v0_6, iface_types, state, types,
+use greentic_interfaces_wasmtime::host_helpers::v1::{
+    HostFns, add_all_v1_to_linker,
+    http_client::{
+        HttpClientError, HttpClientHost, Request as HttpRequest, Response as HttpResponse,
+        TenantCtx as HttpTenantCtx,
+    },
+    messaging_session::{
+        MessagingSessionError as MessagingError, MessagingSessionHost, OpAck as MessagingAck,
+        OutboundMessage, TenantCtx as MessagingTenantCtx,
+    },
+    runner_host_http::RunnerHostHttp,
+    runner_host_kv::RunnerHostKv,
+    secrets_store::{SecretsError, SecretsStoreHost},
+    state_store::{
+        OpAck as StateOpAck, StateKey as HostStateKey, StateStoreError as StateError,
+        StateStoreHost, TenantCtx as StateTenantCtx,
+    },
+    telemetry_logger::{
+        OpAck as TelemetryAck, SpanContext as TelemetrySpanContext,
+        TelemetryLoggerError as TelemetryError, TelemetryLoggerHost,
+        TenantCtx as TelemetryTenantCtx,
+    },
 };
 use greentic_pack::builder as legacy_pack;
-use greentic_session::SessionKey as StoreSessionKey;
 use greentic_types::{
-    EnvId, Flow, FlowId, SessionCursor as StoreSessionCursor, SessionData,
-    StateKey as StoreStateKey, TeamId, TenantCtx as TypesTenantCtx, TenantId, UserId,
+    EnvId, Flow, StateKey as StoreStateKey, TeamId, TenantCtx as TypesTenantCtx, TenantId, UserId,
     decode_pack_manifest,
 };
 use once_cell::sync::Lazy;
@@ -40,6 +52,7 @@ use wasmparser::{Parser, Payload};
 use wasmtime::StoreContextMut;
 use zip::ZipArchive;
 
+use crate::runner::engine::{FlowContext, FlowEngine, FlowStatus};
 use crate::runner::flow_adapter::{FlowIR, flow_doc_to_ir, flow_ir_to_flow};
 use crate::runner::mocks::{HttpDecision, HttpMockRequest, HttpMockResponse, MockLayer};
 
@@ -50,6 +63,7 @@ use crate::storage::{DynSessionStore, DynStateStore};
 use crate::verify;
 use crate::wasi::RunnerWasiPolicy;
 use tracing::warn;
+use wasmtime_wasi::p2::add_to_linker_sync as add_wasi_to_linker;
 use wasmtime_wasi::{WasiCtx, WasiCtxView, WasiView};
 
 use greentic_flow::model::FlowDoc;
@@ -144,6 +158,7 @@ pub struct HostState {
     config: Arc<HostConfig>,
     http_client: Arc<BlockingClient>,
     default_env: String,
+    #[allow(dead_code)]
     session_store: Option<DynSessionStore>,
     state_store: Option<DynStateStore>,
     mocks: Option<Arc<MockLayer>>,
@@ -192,23 +207,27 @@ impl HostState {
         Ok(value)
     }
 
-    fn tenant_ctx_from_v6(&self, ctx: Option<types::TenantCtx>) -> Result<TypesTenantCtx> {
+    fn tenant_ctx_from_v1(&self, ctx: Option<StateTenantCtx>) -> Result<TypesTenantCtx> {
         let tenant_raw = ctx
             .as_ref()
             .map(|ctx| ctx.tenant.clone())
             .unwrap_or_else(|| self.config.tenant.clone());
+        let env_raw = ctx
+            .as_ref()
+            .map(|ctx| ctx.env.clone())
+            .unwrap_or_else(|| self.default_env.clone());
         let tenant_id = TenantId::from_str(&tenant_raw)
             .with_context(|| format!("invalid tenant id `{tenant_raw}`"))?;
-        let env_id = EnvId::from_str(&self.default_env)
+        let env_id = EnvId::from_str(&env_raw)
             .unwrap_or_else(|_| EnvId::from_str("local").expect("default env must be valid"));
         let mut tenant_ctx = TypesTenantCtx::new(env_id, tenant_id);
         if let Some(ctx) = ctx {
-            if let Some(team) = ctx.team {
+            if let Some(team) = ctx.team.or(ctx.team_id) {
                 let team_id =
                     TeamId::from_str(&team).with_context(|| format!("invalid team id `{team}`"))?;
                 tenant_ctx = tenant_ctx.with_team(Some(team_id));
             }
-            if let Some(user) = ctx.user {
+            if let Some(user) = ctx.user.or(ctx.user_id) {
                 let user_id =
                     UserId::from_str(&user).with_context(|| format!("invalid user id `{user}`"))?;
                 tenant_ctx = tenant_ctx.with_user(Some(user_id));
@@ -229,42 +248,314 @@ impl HostState {
         }
         Ok(tenant_ctx)
     }
+}
 
-    fn session_store_handle(&self) -> Result<DynSessionStore, types::IfaceError> {
-        self.session_store
-            .as_ref()
-            .cloned()
-            .ok_or(types::IfaceError::Unavailable)
-    }
-
-    fn state_store_handle(&self) -> Result<DynStateStore, types::IfaceError> {
-        self.state_store
-            .as_ref()
-            .cloned()
-            .ok_or(types::IfaceError::Unavailable)
-    }
-
-    fn ensure_user(ctx: &TypesTenantCtx) -> Result<UserId, types::IfaceError> {
-        ctx.user_id
-            .clone()
-            .or_else(|| ctx.user.clone())
-            .ok_or(types::IfaceError::InvalidArg)
-    }
-
-    fn ensure_flow(ctx: &TypesTenantCtx) -> Result<FlowId, types::IfaceError> {
-        let flow = ctx.flow_id().ok_or(types::IfaceError::InvalidArg)?;
-        FlowId::from_str(flow).map_err(|_| types::IfaceError::InvalidArg)
-    }
-
-    fn cursor_from_iface(cursor: iface_types::SessionCursor) -> StoreSessionCursor {
-        let mut store_cursor = StoreSessionCursor::new(cursor.node_pointer);
-        if let Some(reason) = cursor.wait_reason {
-            store_cursor = store_cursor.with_wait_reason(reason);
+impl SecretsStoreHost for HostState {
+    fn get(&mut self, key: String) -> Result<Option<Vec<u8>>, SecretsError> {
+        if !self.config.secrets_policy.is_allowed(&key) {
+            return Err(SecretsError::Denied);
         }
-        if let Some(marker) = cursor.outbox_marker {
-            store_cursor = store_cursor.with_outbox_marker(marker);
+        if let Some(mock) = &self.mocks
+            && let Some(value) = mock.secrets_lookup(&key)
+        {
+            return Ok(Some(value.into_bytes()));
         }
-        store_cursor
+        match read_secret_blocking(&self.secrets, &key) {
+            Ok(bytes) => Ok(Some(bytes)),
+            Err(err) => {
+                warn!(secret = %key, error = %err, "secret lookup failed");
+                Err(SecretsError::NotFound)
+            }
+        }
+    }
+}
+
+impl HttpClientHost for HostState {
+    fn send(
+        &mut self,
+        req: HttpRequest,
+        _ctx: Option<HttpTenantCtx>,
+    ) -> Result<HttpResponse, HttpClientError> {
+        if !self.config.http_enabled {
+            return Err(HttpClientError {
+                code: "denied".into(),
+                message: "http client disabled by policy".into(),
+            });
+        }
+
+        let mut mock_state = None;
+        let raw_body = req.body.clone();
+        if let Some(mock) = &self.mocks
+            && let Ok(meta) = HttpMockRequest::new(&req.method, &req.url, raw_body.as_deref())
+        {
+            match mock.http_begin(&meta) {
+                HttpDecision::Mock(response) => {
+                    let headers = response
+                        .headers
+                        .iter()
+                        .map(|(k, v)| (k.clone(), v.clone()))
+                        .collect();
+                    return Ok(HttpResponse {
+                        status: response.status,
+                        headers,
+                        body: response.body.clone().map(|b| b.into_bytes()),
+                    });
+                }
+                HttpDecision::Deny(reason) => {
+                    return Err(HttpClientError {
+                        code: "denied".into(),
+                        message: reason,
+                    });
+                }
+                HttpDecision::Passthrough { record } => {
+                    mock_state = Some((meta, record));
+                }
+            }
+        }
+
+        let method = req.method.parse().unwrap_or(reqwest::Method::GET);
+        let mut builder = self.http_client.request(method, &req.url);
+        for (key, value) in req.headers {
+            if let Ok(header) = reqwest::header::HeaderName::from_bytes(key.as_bytes())
+                && let Ok(header_value) = reqwest::header::HeaderValue::from_str(&value)
+            {
+                builder = builder.header(header, header_value);
+            }
+        }
+
+        if let Some(body) = raw_body.clone() {
+            builder = builder.body(body);
+        }
+
+        let response = match builder.send() {
+            Ok(resp) => resp,
+            Err(err) => {
+                warn!(url = %req.url, error = %err, "http client request failed");
+                return Err(HttpClientError {
+                    code: "unavailable".into(),
+                    message: err.to_string(),
+                });
+            }
+        };
+
+        let status = response.status().as_u16();
+        let headers_vec = response
+            .headers()
+            .iter()
+            .map(|(k, v)| {
+                (
+                    k.as_str().to_string(),
+                    v.to_str().unwrap_or_default().to_string(),
+                )
+            })
+            .collect::<Vec<_>>();
+        let body_bytes = response.bytes().ok().map(|b| b.to_vec());
+
+        if let Some((meta, true)) = mock_state.take()
+            && let Some(mock) = &self.mocks
+        {
+            let recorded = HttpMockResponse::new(
+                status,
+                headers_vec.clone().into_iter().collect(),
+                body_bytes
+                    .as_ref()
+                    .map(|b| String::from_utf8_lossy(b).into_owned()),
+            );
+            mock.http_record(&meta, &recorded);
+        }
+
+        Ok(HttpResponse {
+            status,
+            headers: headers_vec,
+            body: body_bytes,
+        })
+    }
+}
+
+impl StateStoreHost for HostState {
+    fn read(
+        &mut self,
+        key: HostStateKey,
+        ctx: Option<StateTenantCtx>,
+    ) -> Result<Vec<u8>, StateError> {
+        let store = match self.state_store.as_ref() {
+            Some(store) => store.clone(),
+            None => {
+                return Err(StateError {
+                    code: "unavailable".into(),
+                    message: "state store not configured".into(),
+                });
+            }
+        };
+        let tenant_ctx = match self.tenant_ctx_from_v1(ctx) {
+            Ok(ctx) => ctx,
+            Err(err) => {
+                return Err(StateError {
+                    code: "invalid-ctx".into(),
+                    message: err.to_string(),
+                });
+            }
+        };
+        let key = StoreStateKey::from(key);
+        match store.get_json(&tenant_ctx, STATE_PREFIX, &key, None) {
+            Ok(Some(value)) => Ok(serde_json::to_vec(&value).unwrap_or_else(|_| Vec::new())),
+            Ok(None) => Err(StateError {
+                code: "not_found".into(),
+                message: "state key not found".into(),
+            }),
+            Err(err) => Err(StateError {
+                code: "internal".into(),
+                message: err.to_string(),
+            }),
+        }
+    }
+
+    fn write(
+        &mut self,
+        key: HostStateKey,
+        bytes: Vec<u8>,
+        ctx: Option<StateTenantCtx>,
+    ) -> Result<StateOpAck, StateError> {
+        let store = match self.state_store.as_ref() {
+            Some(store) => store.clone(),
+            None => {
+                return Err(StateError {
+                    code: "unavailable".into(),
+                    message: "state store not configured".into(),
+                });
+            }
+        };
+        let tenant_ctx = match self.tenant_ctx_from_v1(ctx) {
+            Ok(ctx) => ctx,
+            Err(err) => {
+                return Err(StateError {
+                    code: "invalid-ctx".into(),
+                    message: err.to_string(),
+                });
+            }
+        };
+        let key = StoreStateKey::from(key);
+        let value = serde_json::from_slice(&bytes)
+            .unwrap_or_else(|_| Value::String(String::from_utf8_lossy(&bytes).to_string()));
+        match store.set_json(&tenant_ctx, STATE_PREFIX, &key, None, &value, None) {
+            Ok(()) => Ok(StateOpAck::Ok),
+            Err(err) => Err(StateError {
+                code: "internal".into(),
+                message: err.to_string(),
+            }),
+        }
+    }
+
+    fn delete(
+        &mut self,
+        key: HostStateKey,
+        ctx: Option<StateTenantCtx>,
+    ) -> Result<StateOpAck, StateError> {
+        let store = match self.state_store.as_ref() {
+            Some(store) => store.clone(),
+            None => {
+                return Err(StateError {
+                    code: "unavailable".into(),
+                    message: "state store not configured".into(),
+                });
+            }
+        };
+        let tenant_ctx = match self.tenant_ctx_from_v1(ctx) {
+            Ok(ctx) => ctx,
+            Err(err) => {
+                return Err(StateError {
+                    code: "invalid-ctx".into(),
+                    message: err.to_string(),
+                });
+            }
+        };
+        let key = StoreStateKey::from(key);
+        match store.del(&tenant_ctx, STATE_PREFIX, &key) {
+            Ok(_) => Ok(StateOpAck::Ok),
+            Err(err) => Err(StateError {
+                code: "internal".into(),
+                message: err.to_string(),
+            }),
+        }
+    }
+}
+
+impl TelemetryLoggerHost for HostState {
+    fn log(
+        &mut self,
+        span: TelemetrySpanContext,
+        fields: Vec<(String, String)>,
+        _ctx: Option<TelemetryTenantCtx>,
+    ) -> Result<TelemetryAck, TelemetryError> {
+        if let Some(mock) = &self.mocks
+            && mock.telemetry_drain(&[("span_json", span.flow_id.as_str())])
+        {
+            return Ok(TelemetryAck::Ok);
+        }
+        let mut map = serde_json::Map::new();
+        for (k, v) in fields {
+            map.insert(k, Value::String(v));
+        }
+        tracing::info!(
+            tenant = %span.tenant,
+            flow_id = %span.flow_id,
+            node = ?span.node_id,
+            provider = %span.provider,
+            fields = %serde_json::Value::Object(map.clone()),
+            "telemetry log from pack"
+        );
+        Ok(TelemetryAck::Ok)
+    }
+}
+
+impl RunnerHostHttp for HostState {
+    fn request(
+        &mut self,
+        method: String,
+        url: String,
+        headers: Vec<String>,
+        body: Option<Vec<u8>>,
+    ) -> Result<Vec<u8>, String> {
+        let req = HttpRequest {
+            method,
+            url,
+            headers: headers
+                .chunks(2)
+                .filter_map(|chunk| {
+                    if chunk.len() == 2 {
+                        Some((chunk[0].clone(), chunk[1].clone()))
+                    } else {
+                        None
+                    }
+                })
+                .collect(),
+            body,
+        };
+        match HttpClientHost::send(self, req, None) {
+            Ok(resp) => Ok(resp.body.unwrap_or_default()),
+            Err(err) => Err(err.message),
+        }
+    }
+}
+
+impl RunnerHostKv for HostState {
+    fn get(&mut self, _ns: String, _key: String) -> Option<String> {
+        None
+    }
+
+    fn put(&mut self, _ns: String, _key: String, _val: String) {}
+}
+
+impl MessagingSessionHost for HostState {
+    fn send(
+        &mut self,
+        _message: OutboundMessage,
+        _ctx: MessagingTenantCtx,
+    ) -> Result<MessagingAck, MessagingError> {
+        Err(MessagingError {
+            code: "unimplemented".into(),
+            message: "messaging session host not wired".into(),
+        })
     }
 }
 
@@ -340,6 +631,7 @@ fn load_legacy_flows(
         pack_id: manifest.meta.pack_id.clone(),
         version: manifest.meta.version.to_string(),
         entry_flows,
+        secret_requirements: Vec::new(),
     };
 
     Ok(PackFlows {
@@ -350,7 +642,7 @@ fn load_legacy_flows(
 }
 
 pub struct ComponentState {
-    host: HostState,
+    pub host: HostState,
     wasi_ctx: WasiCtx,
     resource_table: ResourceTable,
 }
@@ -402,6 +694,24 @@ fn add_component_control_to_linker(linker: &mut Linker<ComponentState>) -> wasmt
     Ok(())
 }
 
+pub fn register_all(linker: &mut Linker<ComponentState>) -> Result<()> {
+    add_wasi_to_linker(linker)?;
+    add_all_v1_to_linker(
+        linker,
+        HostFns {
+            http_client: Some(|state| state.host_mut()),
+            oauth_broker: None,
+            runner_host_http: Some(|state| state.host_mut()),
+            runner_host_kv: Some(|state| state.host_mut()),
+            messaging_session: Some(|state| state.host_mut()),
+            telemetry_logger: Some(|state| state.host_mut()),
+            state_store: Some(|state| state.host_mut()),
+            secrets_store: Some(|state| state.host_mut()),
+        },
+    )?;
+    Ok(())
+}
+
 impl OAuthHostContext for ComponentState {
     fn tenant_id(&self) -> &str {
         &self.host.config.tenant
@@ -433,441 +743,6 @@ impl WasiView for ComponentState {
 unsafe impl Send for ComponentState {}
 #[allow(unsafe_code)]
 unsafe impl Sync for ComponentState {}
-
-impl host_import_v0_6::HostImports for ComponentState {
-    fn secrets_get(
-        &mut self,
-        key: String,
-        ctx: Option<types::TenantCtx>,
-    ) -> WasmResult<Result<String, types::IfaceError>> {
-        host_import_v0_6::HostImports::secrets_get(self.host_mut(), key, ctx)
-    }
-
-    fn telemetry_emit(
-        &mut self,
-        span_json: String,
-        ctx: Option<types::TenantCtx>,
-    ) -> WasmResult<()> {
-        host_import_v0_6::HostImports::telemetry_emit(self.host_mut(), span_json, ctx)
-    }
-
-    fn http_fetch(
-        &mut self,
-        req: host_import_v0_6::http::HttpRequest,
-        ctx: Option<types::TenantCtx>,
-    ) -> WasmResult<Result<host_import_v0_6::http::HttpResponse, types::IfaceError>> {
-        host_import_v0_6::HostImports::http_fetch(self.host_mut(), req, ctx)
-    }
-
-    fn mcp_exec(
-        &mut self,
-        component: String,
-        action: String,
-        args_json: String,
-        ctx: Option<types::TenantCtx>,
-    ) -> WasmResult<Result<String, types::IfaceError>> {
-        host_import_v0_6::HostImports::mcp_exec(self.host_mut(), component, action, args_json, ctx)
-    }
-
-    fn state_get(
-        &mut self,
-        key: iface_types::StateKey,
-        ctx: Option<types::TenantCtx>,
-    ) -> WasmResult<Result<String, types::IfaceError>> {
-        host_import_v0_6::HostImports::state_get(self.host_mut(), key, ctx)
-    }
-
-    fn state_set(
-        &mut self,
-        key: iface_types::StateKey,
-        value_json: String,
-        ctx: Option<types::TenantCtx>,
-    ) -> WasmResult<Result<state::OpAck, types::IfaceError>> {
-        host_import_v0_6::HostImports::state_set(self.host_mut(), key, value_json, ctx)
-    }
-
-    fn session_update(
-        &mut self,
-        cursor: iface_types::SessionCursor,
-        ctx: Option<types::TenantCtx>,
-    ) -> WasmResult<Result<String, types::IfaceError>> {
-        host_import_v0_6::HostImports::session_update(self.host_mut(), cursor, ctx)
-    }
-}
-
-impl host_import_v0_2::HostImports for ComponentState {
-    fn secrets_get(
-        &mut self,
-        key: String,
-        ctx: Option<LegacyTenantCtx>,
-    ) -> WasmResult<Result<String, LegacyIfaceError>> {
-        host_import_v0_2::HostImports::secrets_get(self.host_mut(), key, ctx)
-    }
-
-    fn telemetry_emit(
-        &mut self,
-        span_json: String,
-        ctx: Option<LegacyTenantCtx>,
-    ) -> WasmResult<()> {
-        host_import_v0_2::HostImports::telemetry_emit(self.host_mut(), span_json, ctx)
-    }
-
-    fn tool_invoke(
-        &mut self,
-        tool: String,
-        action: String,
-        args_json: String,
-        ctx: Option<LegacyTenantCtx>,
-    ) -> WasmResult<Result<String, LegacyIfaceError>> {
-        host_import_v0_2::HostImports::tool_invoke(self.host_mut(), tool, action, args_json, ctx)
-    }
-
-    fn http_fetch(
-        &mut self,
-        req: host_import_v0_2::greentic::host_import::imports::HttpRequest,
-        ctx: Option<host_import_v0_2::greentic::host_import::imports::TenantCtx>,
-    ) -> WasmResult<
-        Result<
-            host_import_v0_2::greentic::host_import::imports::HttpResponse,
-            host_import_v0_2::greentic::host_import::imports::IfaceError,
-        >,
-    > {
-        host_import_v0_2::HostImports::http_fetch(self.host_mut(), req, ctx)
-    }
-}
-
-impl host_import_v0_6::HostImports for HostState {
-    fn secrets_get(
-        &mut self,
-        key: String,
-        _ctx: Option<types::TenantCtx>,
-    ) -> WasmResult<Result<String, types::IfaceError>> {
-        Ok(self.get_secret(&key).map_err(|err| {
-            tracing::warn!(secret = %key, error = %err, "secret lookup denied");
-            types::IfaceError::Denied
-        }))
-    }
-
-    fn telemetry_emit(
-        &mut self,
-        span_json: String,
-        _ctx: Option<types::TenantCtx>,
-    ) -> WasmResult<()> {
-        if let Some(mock) = &self.mocks
-            && mock.telemetry_drain(&[("span_json", span_json.as_str())])
-        {
-            return Ok(());
-        }
-        tracing::info!(span = %span_json, "telemetry emit from pack");
-        Ok(())
-    }
-
-    fn http_fetch(
-        &mut self,
-        req: host_import_v0_6::http::HttpRequest,
-        _ctx: Option<types::TenantCtx>,
-    ) -> WasmResult<Result<host_import_v0_6::http::HttpResponse, types::IfaceError>> {
-        let legacy_req = LegacyHttpRequest {
-            method: req.method,
-            url: req.url,
-            headers_json: req.headers_json,
-            body: req.body,
-        };
-        match host_import_v0_2::HostImports::http_fetch(self, legacy_req, None)? {
-            Ok(resp) => Ok(Ok(host_import_v0_6::http::HttpResponse {
-                status: resp.status,
-                headers_json: resp.headers_json,
-                body: resp.body,
-            })),
-            Err(err) => Ok(Err(map_legacy_error(err))),
-        }
-    }
-
-    fn mcp_exec(
-        &mut self,
-        component: String,
-        action: String,
-        args_json: String,
-        ctx: Option<types::TenantCtx>,
-    ) -> WasmResult<Result<String, types::IfaceError>> {
-        let _ = (component, action, args_json, ctx);
-        tracing::warn!("mcp.exec requested but MCP bridge is removed; returning unavailable");
-        Ok(Err(types::IfaceError::Unavailable))
-    }
-
-    fn state_get(
-        &mut self,
-        key: iface_types::StateKey,
-        ctx: Option<types::TenantCtx>,
-    ) -> WasmResult<Result<String, types::IfaceError>> {
-        let store = match self.state_store_handle() {
-            Ok(store) => store,
-            Err(err) => return Ok(Err(err)),
-        };
-        let tenant_ctx = match self.tenant_ctx_from_v6(ctx) {
-            Ok(ctx) => ctx,
-            Err(err) => {
-                tracing::warn!(error = %err, "invalid tenant context for state.get");
-                return Ok(Err(types::IfaceError::InvalidArg));
-            }
-        };
-        let key = StoreStateKey::from(key);
-        match store.get_json(&tenant_ctx, STATE_PREFIX, &key, None) {
-            Ok(Some(value)) => {
-                let result = if let Some(text) = value.as_str() {
-                    text.to_string()
-                } else {
-                    serde_json::to_string(&value).unwrap_or_else(|_| value.to_string())
-                };
-                Ok(Ok(result))
-            }
-            Ok(None) => Ok(Err(types::IfaceError::NotFound)),
-            Err(err) => {
-                tracing::warn!(error = %err, "state.get failed");
-                Ok(Err(types::IfaceError::Internal))
-            }
-        }
-    }
-
-    fn state_set(
-        &mut self,
-        key: iface_types::StateKey,
-        value_json: String,
-        ctx: Option<types::TenantCtx>,
-    ) -> WasmResult<Result<state::OpAck, types::IfaceError>> {
-        let store = match self.state_store_handle() {
-            Ok(store) => store,
-            Err(err) => return Ok(Err(err)),
-        };
-        let tenant_ctx = match self.tenant_ctx_from_v6(ctx) {
-            Ok(ctx) => ctx,
-            Err(err) => {
-                tracing::warn!(error = %err, "invalid tenant context for state.set");
-                return Ok(Err(types::IfaceError::InvalidArg));
-            }
-        };
-        let key = StoreStateKey::from(key);
-        let value = serde_json::from_str(&value_json).unwrap_or(Value::String(value_json));
-        match store.set_json(&tenant_ctx, STATE_PREFIX, &key, None, &value, None) {
-            Ok(()) => Ok(Ok(state::OpAck::Ok)),
-            Err(err) => {
-                tracing::warn!(error = %err, "state.set failed");
-                Ok(Err(types::IfaceError::Internal))
-            }
-        }
-    }
-
-    fn session_update(
-        &mut self,
-        cursor: iface_types::SessionCursor,
-        ctx: Option<types::TenantCtx>,
-    ) -> WasmResult<Result<String, types::IfaceError>> {
-        let store = match self.session_store_handle() {
-            Ok(store) => store,
-            Err(err) => return Ok(Err(err)),
-        };
-        let tenant_ctx = match self.tenant_ctx_from_v6(ctx) {
-            Ok(ctx) => ctx,
-            Err(err) => {
-                tracing::warn!(error = %err, "invalid tenant context for session.update");
-                return Ok(Err(types::IfaceError::InvalidArg));
-            }
-        };
-        let user = match Self::ensure_user(&tenant_ctx) {
-            Ok(user) => user,
-            Err(err) => return Ok(Err(err)),
-        };
-        let flow_id = match Self::ensure_flow(&tenant_ctx) {
-            Ok(flow) => flow,
-            Err(err) => return Ok(Err(err)),
-        };
-        let cursor = Self::cursor_from_iface(cursor);
-        let payload = SessionData {
-            tenant_ctx: tenant_ctx.clone(),
-            flow_id,
-            cursor: cursor.clone(),
-            context_json: serde_json::json!({
-                "node_pointer": cursor.node_pointer,
-                "wait_reason": cursor.wait_reason,
-                "outbox_marker": cursor.outbox_marker,
-            })
-            .to_string(),
-        };
-        if let Some(existing) = tenant_ctx.session_id() {
-            let key = StoreSessionKey::from(existing.to_string());
-            if let Err(err) = store.update_session(&key, payload) {
-                tracing::error!(error = %err, "failed to update session snapshot");
-                return Ok(Err(types::IfaceError::Internal));
-            }
-            return Ok(Ok(existing.to_string()));
-        }
-        match store.find_by_user(&tenant_ctx, &user) {
-            Ok(Some((key, _))) => {
-                if let Err(err) = store.update_session(&key, payload) {
-                    tracing::error!(error = %err, "failed to update existing user session");
-                    return Ok(Err(types::IfaceError::Internal));
-                }
-                return Ok(Ok(key.to_string()));
-            }
-            Ok(None) => {}
-            Err(err) => {
-                tracing::error!(error = %err, "session lookup failed");
-                return Ok(Err(types::IfaceError::Internal));
-            }
-        }
-        let key = match store.create_session(&tenant_ctx, payload.clone()) {
-            Ok(key) => key,
-            Err(err) => {
-                tracing::error!(error = %err, "failed to create session");
-                return Ok(Err(types::IfaceError::Internal));
-            }
-        };
-        let ctx_with_session = tenant_ctx.with_session(key.to_string());
-        let updated_payload = SessionData {
-            tenant_ctx: ctx_with_session.clone(),
-            ..payload
-        };
-        if let Err(err) = store.update_session(&key, updated_payload) {
-            tracing::warn!(error = %err, "failed to stamp session id after create");
-        }
-        Ok(Ok(key.to_string()))
-    }
-}
-
-impl host_import_v0_2::HostImports for HostState {
-    fn secrets_get(
-        &mut self,
-        key: String,
-        _ctx: Option<LegacyTenantCtx>,
-    ) -> WasmResult<Result<String, LegacyIfaceError>> {
-        Ok(self.get_secret(&key).map_err(|err| {
-            tracing::warn!(secret = %key, error = %err, "secret lookup denied");
-            LegacyIfaceError::Denied
-        }))
-    }
-
-    fn telemetry_emit(
-        &mut self,
-        span_json: String,
-        _ctx: Option<LegacyTenantCtx>,
-    ) -> WasmResult<()> {
-        if let Some(mock) = &self.mocks
-            && mock.telemetry_drain(&[("span_json", span_json.as_str())])
-        {
-            return Ok(());
-        }
-        tracing::info!(span = %span_json, "telemetry emit from pack");
-        Ok(())
-    }
-
-    fn tool_invoke(
-        &mut self,
-        tool: String,
-        action: String,
-        args_json: String,
-        ctx: Option<LegacyTenantCtx>,
-    ) -> WasmResult<Result<String, LegacyIfaceError>> {
-        let _ = (tool, action, args_json, ctx);
-        tracing::warn!("tool invoke requested but MCP bridge is removed; returning unavailable");
-        Ok(Err(LegacyIfaceError::Unavailable))
-    }
-
-    fn http_fetch(
-        &mut self,
-        req: LegacyHttpRequest,
-        _ctx: Option<LegacyTenantCtx>,
-    ) -> WasmResult<Result<LegacyHttpResponse, LegacyIfaceError>> {
-        if !self.config.http_enabled {
-            tracing::warn!(url = %req.url, "http fetch denied by policy");
-            return Ok(Err(LegacyIfaceError::Denied));
-        }
-
-        let mut mock_state = None;
-        let raw_body = req.body.clone();
-        if let Some(mock) = &self.mocks
-            && let Ok(meta) = HttpMockRequest::new(
-                &req.method,
-                &req.url,
-                raw_body.as_deref().map(|body| body.as_bytes()),
-            )
-        {
-            match mock.http_begin(&meta) {
-                HttpDecision::Mock(response) => {
-                    let http = LegacyHttpResponse::from(&response);
-                    return Ok(Ok(http));
-                }
-                HttpDecision::Deny(reason) => {
-                    tracing::warn!(url = %req.url, reason = %reason, "http fetch blocked by mocks");
-                    return Ok(Err(LegacyIfaceError::Denied));
-                }
-                HttpDecision::Passthrough { record } => {
-                    mock_state = Some((meta, record));
-                }
-            }
-        }
-
-        let method = req.method.parse().unwrap_or(reqwest::Method::GET);
-        let mut builder = self.http_client.request(method, &req.url);
-
-        if let Some(headers_json) = req.headers_json.as_ref() {
-            match serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(headers_json) {
-                Ok(map) => {
-                    for (key, value) in map {
-                        if let Some(val) = value.as_str()
-                            && let Ok(header) =
-                                reqwest::header::HeaderName::from_bytes(key.as_bytes())
-                            && let Ok(header_value) = reqwest::header::HeaderValue::from_str(val)
-                        {
-                            builder = builder.header(header, header_value);
-                        }
-                    }
-                }
-                Err(err) => {
-                    tracing::warn!(error = %err, "failed to parse headers for http.fetch");
-                }
-            }
-        }
-
-        if let Some(body) = raw_body.clone() {
-            builder = builder.body(body);
-        }
-
-        let response = match builder.send() {
-            Ok(resp) => resp,
-            Err(err) => {
-                tracing::error!(url = %req.url, error = %err, "http fetch failed");
-                return Ok(Err(LegacyIfaceError::Unavailable));
-            }
-        };
-
-        let status = response.status().as_u16();
-        let headers_map = response
-            .headers()
-            .iter()
-            .map(|(k, v)| {
-                (
-                    k.as_str().to_string(),
-                    v.to_str().unwrap_or_default().to_string(),
-                )
-            })
-            .collect::<BTreeMap<_, _>>();
-        let headers_json = serde_json::to_string(&headers_map).ok();
-        let body = response.text().ok();
-
-        if let Some((meta, true)) = mock_state.take()
-            && let Some(mock) = &self.mocks
-        {
-            let recorded = HttpMockResponse::new(status, headers_map.clone(), body.clone());
-            mock.http_record(&meta, &recorded);
-        }
-
-        Ok(Ok(LegacyHttpResponse {
-            status,
-            headers_json,
-            body,
-        }))
-    }
-}
 
 impl PackRuntime {
     #[allow(clippy::too_many_arguments)]
@@ -1021,11 +896,53 @@ impl PackRuntime {
     #[allow(dead_code)]
     pub async fn run_flow(
         &self,
-        _flow_id: &str,
-        _input: serde_json::Value,
+        flow_id: &str,
+        input: serde_json::Value,
     ) -> Result<serde_json::Value> {
-        // TODO: dispatch flow execution via Wasmtime
-        Ok(serde_json::json!({}))
+        let pack = Arc::new(
+            PackRuntime::load(
+                &self.path,
+                Arc::clone(&self.config),
+                self.mocks.clone(),
+                self.archive_path.as_deref(),
+                self.session_store.clone(),
+                self.state_store.clone(),
+                Arc::clone(&self.wasi_policy),
+                self.secrets.clone(),
+                self.oauth_config.clone(),
+                false,
+            )
+            .await?,
+        );
+
+        let engine = FlowEngine::new(vec![Arc::clone(&pack)], Arc::clone(&self.config)).await?;
+        let retry_config = self.config.retry_config().into();
+        let mocks = pack.mocks.as_deref();
+        let tenant = self.config.tenant.as_str();
+
+        let ctx = FlowContext {
+            tenant,
+            flow_id,
+            node_id: None,
+            tool: None,
+            action: None,
+            session_id: None,
+            provider_id: None,
+            retry_config,
+            observer: None,
+            mocks,
+        };
+
+        let execution = engine.execute(ctx, input).await?;
+        match execution.status {
+            FlowStatus::Completed => Ok(execution.output),
+            FlowStatus::Waiting(wait) => Ok(serde_json::json!({
+                "status": "pending",
+                "reason": wait.reason,
+                "resume": wait.snapshot,
+                "response": execution.output,
+            })),
+        }
     }
 
     pub async fn invoke_component(
@@ -1045,7 +962,7 @@ impl PackRuntime {
             pre
         } else {
             let mut linker = Linker::new(&self.engine);
-            register_all(&mut linker, self.oauth_config.is_some())?;
+            register_all(&mut linker)?;
             add_component_control_to_linker(&mut linker)?;
             let pre = ComponentPre::new(
                 linker
@@ -1136,6 +1053,40 @@ impl PackRuntime {
         &self.metadata
     }
 
+    pub fn required_secrets(&self) -> &[greentic_types::SecretRequirement] {
+        &self.metadata.secret_requirements
+    }
+
+    pub fn missing_secrets(
+        &self,
+        tenant_ctx: &TypesTenantCtx,
+    ) -> Vec<greentic_types::SecretRequirement> {
+        let env = tenant_ctx.env.as_str().to_string();
+        let tenant = tenant_ctx.tenant.as_str().to_string();
+        let team = tenant_ctx.team.as_ref().map(|t| t.as_str().to_string());
+        self.required_secrets()
+            .iter()
+            .filter(|req| {
+                // scope must match current context if provided
+                if let Some(scope) = &req.scope {
+                    if scope.env != env {
+                        return false;
+                    }
+                    if scope.tenant != tenant {
+                        return false;
+                    }
+                    if let Some(ref team_req) = scope.team
+                        && team.as_ref() != Some(team_req)
+                    {
+                        return false;
+                    }
+                }
+                read_secret_blocking(&self.secrets, req.key.as_str()).is_err()
+            })
+            .cloned()
+            .collect()
+    }
+
     pub fn for_component_test(
         components: Vec<(String, PathBuf)>,
         flows: HashMap<String, FlowIR>,
@@ -1199,16 +1150,6 @@ impl PackRuntime {
             secrets: crate::secrets::default_manager(),
             oauth_config: None,
         })
-    }
-}
-
-fn map_legacy_error(err: LegacyIfaceError) -> types::IfaceError {
-    match err {
-        LegacyIfaceError::InvalidArg => types::IfaceError::InvalidArg,
-        LegacyIfaceError::NotFound => types::IfaceError::NotFound,
-        LegacyIfaceError::Denied => types::IfaceError::Denied,
-        LegacyIfaceError::Unavailable => types::IfaceError::Unavailable,
-        LegacyIfaceError::Internal => types::IfaceError::Internal,
     }
 }
 
@@ -1439,6 +1380,8 @@ pub struct PackMetadata {
     pub version: String,
     #[serde(default)]
     pub entry_flows: Vec<String>,
+    #[serde(default)]
+    pub secret_requirements: Vec<greentic_types::SecretRequirement>,
 }
 
 impl PackMetadata {
@@ -1476,6 +1419,8 @@ impl PackMetadata {
             entry_flows: Vec<String>,
             #[serde(default)]
             flows: Vec<RawFlow>,
+            #[serde(default)]
+            secret_requirements: Vec<greentic_types::SecretRequirement>,
         }
 
         #[derive(Deserialize)]
@@ -1494,6 +1439,7 @@ impl PackMetadata {
             pack_id: manifest.pack_id,
             version: manifest.version,
             entry_flows,
+            secret_requirements: manifest.secret_requirements,
         })
     }
 
@@ -1506,6 +1452,7 @@ impl PackMetadata {
             pack_id,
             version: "0.0.0".to_string(),
             entry_flows: Vec::new(),
+            secret_requirements: Vec::new(),
         }
     }
 
@@ -1519,17 +1466,7 @@ impl PackMetadata {
             pack_id: manifest.pack_id.as_str().to_string(),
             version: manifest.version.to_string(),
             entry_flows,
-        }
-    }
-}
-
-impl From<&HttpMockResponse> for LegacyHttpResponse {
-    fn from(value: &HttpMockResponse) -> Self {
-        let headers_json = serde_json::to_string(&value.headers).ok();
-        Self {
-            status: value.status,
-            headers_json,
-            body: value.body.clone(),
+            secret_requirements: manifest.secret_requirements.clone(),
         }
     }
 }

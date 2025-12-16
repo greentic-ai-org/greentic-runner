@@ -15,7 +15,7 @@ use greentic_types::{
 use once_cell::sync::Lazy;
 use semver::Version;
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs::File;
 use std::io::{Read, Write};
 use std::sync::Arc;
@@ -178,6 +178,7 @@ fn build_pack(flow_yaml: &str, pack_path: &Path) -> Result<()> {
             operations: Vec::new(),
             config_schema: None,
             resources: ResourceHints::default(),
+            dev_flows: BTreeMap::new(),
         }],
         flows: vec![PackFlowEntry {
             id: flow.id.clone(),
@@ -189,6 +190,7 @@ fn build_pack(flow_yaml: &str, pack_path: &Path) -> Result<()> {
         dependencies: Vec::new(),
         capabilities: Vec::new(),
         signatures: Default::default(),
+        secret_requirements: Vec::new(),
     };
 
     let mut zip = zip::ZipWriter::new(File::create(pack_path).context("create pack archive")?);

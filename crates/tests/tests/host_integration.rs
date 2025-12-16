@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fs;
 use std::future::Future;
 use std::io::{self, Write};
@@ -238,6 +239,7 @@ fn build_runner_components_pack(pack_path: &std::path::Path) -> Result<()> {
                 operations: Vec::new(),
                 config_schema: None,
                 resources: ResourceHints::default(),
+                dev_flows: BTreeMap::new(),
             },
             ComponentManifest {
                 id: "templating.handlebars".parse()?,
@@ -250,6 +252,7 @@ fn build_runner_components_pack(pack_path: &std::path::Path) -> Result<()> {
                 operations: Vec::new(),
                 config_schema: None,
                 resources: ResourceHints::default(),
+                dev_flows: BTreeMap::new(),
             },
         ],
         flows: vec![PackFlowEntry {
@@ -262,6 +265,7 @@ fn build_runner_components_pack(pack_path: &std::path::Path) -> Result<()> {
         dependencies: Vec::new(),
         capabilities: Vec::new(),
         signatures: Default::default(),
+        secret_requirements: Vec::new(),
     };
 
     let mut writer = ZipWriter::new(

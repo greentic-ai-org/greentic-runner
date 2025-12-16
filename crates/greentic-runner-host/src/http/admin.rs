@@ -15,6 +15,8 @@ pub async fn status(AdminGuard: AdminGuard, State(state): State<ServerState>) ->
         .map(|(tenant, runtime)| {
             let pack = runtime.pack();
             let metadata = pack.metadata();
+            let required_secrets = runtime.required_secrets();
+            let missing_secrets = runtime.missing_secrets();
             let overlays = runtime
                 .overlays()
                 .into_iter()
@@ -34,6 +36,8 @@ pub async fn status(AdminGuard: AdminGuard, State(state): State<ServerState>) ->
                 "version": metadata.version,
                 "digest": runtime.digest(),
                 "overlays": overlays,
+                "required_secrets": required_secrets,
+                "missing_secrets": missing_secrets,
             })
         })
         .collect::<Vec<_>>();

@@ -20,7 +20,6 @@ pub mod component_api;
 pub mod config;
 pub mod engine;
 pub mod http;
-pub mod imports;
 pub mod ingress;
 pub mod pack;
 pub mod routing;

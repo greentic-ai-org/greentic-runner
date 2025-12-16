@@ -111,6 +111,7 @@ fn build_store_ctx(envelope: &IngressEnvelope) -> GResult<(TenantCtx, UserId, St
     let user = derive_user_id(&hint)?;
     let mut ctx = envelope.tenant_ctx();
     ctx = ctx.with_session(hint.clone());
+    ctx = ctx.with_user(Some(user.clone()));
     Ok((ctx, user, hint))
 }
 

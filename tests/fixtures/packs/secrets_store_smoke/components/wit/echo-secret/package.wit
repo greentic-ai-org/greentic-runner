@@ -1,0 +1,12 @@
+// SPDX-License-Identifier: MIT
+package echo:echo-secret@0.0.1;
+
+use greentic:secrets-store/secrets-store@1.0.0;
+
+world echo-secret {
+  /// Import the secrets-store host interface.
+  import secrets-store;
+
+  /// Calls secrets-store.get("TEST_API_KEY") and returns JSON.
+  export run: func() -> string;
+}

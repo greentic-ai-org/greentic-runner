@@ -1,0 +1,38 @@
+pack_id: runner.secrets-smoke
+version: 0.0.1
+publisher: test
+kind: application
+components:
+  - id: smoke.echo-secret
+    version: 0.0.1
+    supports: [http]
+    world: greentic:component@0.4.0
+    operations: []
+    profiles: {}
+    capabilities:
+      secrets:
+        required:
+          - key: TEST_API_KEY
+            required: true
+            scope:
+              env: local
+              tenant: test-tenant
+              team: null
+            format: text
+flows:
+  - id: echo-secret
+    kind: http
+    flow:
+      nodes:
+        start:
+          component: smoke.echo-secret
+          raw:
+            invoke:
+              op: default
+              with: {}
+          routing:
+            - out: true
+      entrypoint: start
+    tags: []
+entry_flows:
+  - echo-secret

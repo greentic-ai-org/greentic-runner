@@ -173,6 +173,10 @@ cargo run -p greentic-runner --bin greentic-gen-bindings \
 
 `--complete` fills safe defaults for env passthrough, network allowlists, secrets, and MCP server stubs; `--strict` additionally fails if HTTP/secrets/MCP requirements cannot be satisfied so pack authors can share hints via `bindings.hints.yaml` or `meta.bindings` annotations. The CLI also understands `--component` so future packs compiled to a Wasm component can be inspected for host imports before generating bindings.
 
+## Repo settings
+
+Enable GitHub’s “Allow auto-merge” in repo settings and configure required branch checks; the Dependabot auto-merge workflow only acts on `dependabot[bot]` PRs once required checks pass.
+
 ## License
 
 MIT

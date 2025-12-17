@@ -1,6 +1,6 @@
 use std::io::copy;
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use greentic_config_types::{NetworkConfig, TlsMode};
 use reqwest::blocking::Client;
 use std::time::Duration;
@@ -27,7 +27,7 @@ impl HttpResolver {
                 builder = builder.timeout(Duration::from_millis(timeout));
             }
             if matches!(cfg.tls_mode, TlsMode::Disabled) {
-                builder = builder.danger_accept_invalid_certs(true);
+                bail!("TLS certificate validation cannot be disabled");
             }
         }
         Ok(Self {

@@ -16,9 +16,8 @@ fn main() -> Result<()> {
     let result = runner.run_pack(pack_path)?;
 
     println!(
-        "Pack run completed with status {:?}\nSession: {}\nArtifacts: {}",
+        "Pack run completed with status {:?}\nArtifacts: {}",
         result.status,
-        result.session_id,
         result.artifacts_dir.display()
     );
 

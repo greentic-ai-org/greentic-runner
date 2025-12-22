@@ -67,7 +67,7 @@ wasmparser = "0.243"
 cron = "0.15"
 uuid = { version = "1", features = ["v4"] }
 url = "2"
-zip = { version = "6", default-features = false, features = ["deflate-flate2"] }
+zip = { version = "7", default-features = false, features = ["deflate-flate2"] }
 indexmap = "2"
 bytes = "1"
 hmac = "0.12"

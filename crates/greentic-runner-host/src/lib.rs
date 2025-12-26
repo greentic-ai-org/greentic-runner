@@ -14,9 +14,10 @@ use std::time::Duration;
 use crate::secrets::SecretsBackend;
 use anyhow::{Context, Result, anyhow};
 use greentic_config::ResolvedConfig;
+#[cfg(feature = "telemetry")]
+use greentic_config_types::TelemetryExporterKind;
 use greentic_config_types::{
     NetworkConfig, PackSourceConfig, PacksConfig, PathsConfig, TelemetryConfig,
-    TelemetryExporterKind,
 };
 #[cfg(feature = "telemetry")]
 use greentic_telemetry::export::{ExportConfig as TelemetryExportConfig, ExportMode, Sampling};

@@ -960,7 +960,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -1062,7 +1062,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -1398,9 +1398,9 @@ dependencies = [
 
 [[package]]
 name = "greentic-interfaces"
-version = "0.4.66"
+version = "0.4.69"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1eb5a2831680a4407c4a7e8f18aeea7e8f157fb801fbd93985f598420924cf29"
+checksum = "03087692a2812d9f727e46e8b831b8f5123c96ae47eca9dd233b43b1e484567a"
 dependencies = [
  "anyhow",
  "greentic-types",
@@ -1408,9 +1408,9 @@ dependencies = [
  "thiserror",
  "time",
  "wasmtime",
- "wit-bindgen 0.49.0",
- "wit-bindgen-core 0.49.0",
- "wit-bindgen-rust 0.49.0",
+ "wit-bindgen 0.50.0",
+ "wit-bindgen-core 0.50.0",
+ "wit-bindgen-rust 0.50.0",
 ]
 
 [[package]]
@@ -2471,7 +2471,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -2929,7 +2929,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.60.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -3276,7 +3276,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.11.0",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -3775,7 +3775,7 @@ dependencies = [
  "getrandom 0.3.4",
  "once_cell",
  "rustix 1.1.3",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -4785,7 +4785,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -5080,11 +5080,11 @@ dependencies = [
 
 [[package]]
 name = "wit-bindgen"
-version = "0.49.0"
+version = "0.50.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c64be1abfe5d4fdb2d41581fac134e8c9204da1e604b5500926478b7f264e36f"
+checksum = "a3f72f96146c1e2648232350c3c59efe5a17738767f72efdc5e766b9e4a8c896"
 dependencies = [
- "wit-bindgen-rust-macro 0.49.0",
+ "wit-bindgen-rust-macro 0.50.0",
 ]
 
 [[package]]
@@ -5100,9 +5100,9 @@ dependencies = [
 
 [[package]]
 name = "wit-bindgen-core"
-version = "0.49.0"
+version = "0.50.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "886e8e938e4e9fe54143c080cbb99d7db5d19242b62ef225dbb28e17b3223bd8"
+checksum = "6ee98d5747ec63897e51101c8cafad569cc639346332c0378772ef4baeea8ed2"
 dependencies = [
  "anyhow",
  "heck",
@@ -5127,9 +5127,9 @@ dependencies = [
 
 [[package]]
 name = "wit-bindgen-rust"
-version = "0.49.0"
+version = "0.50.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "145cac8fb12d99aea13a3f9e0d07463fa030edeebab2c03805eda0e1cc229bba"
+checksum = "8596d6a44bcc2b66e99213c342a85ff72be1109972f5353bb07d05a890a0c257"
 dependencies = [
  "anyhow",
  "heck",
@@ -5137,7 +5137,7 @@ dependencies = [
  "prettyplease",
  "syn",
  "wasm-metadata 0.243.0",
- "wit-bindgen-core 0.49.0",
+ "wit-bindgen-core 0.50.0",
  "wit-component 0.243.0",
 ]
 
@@ -5158,17 +5158,17 @@ dependencies = [
 
 [[package]]
 name = "wit-bindgen-rust-macro"
-version = "0.49.0"
+version = "0.50.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6042452ac4e58891cdb6321bb98aabb9827dbaf6f4e971734d8dd86813319aea"
+checksum = "098fd8b2c4bab0052159a87d02acad740a9c809afe9dcf5bd0b92eb3f63da154"
 dependencies = [
  "anyhow",
  "prettyplease",
  "proc-macro2",
  "quote",
  "syn",
- "wit-bindgen-core 0.49.0",
- "wit-bindgen-rust 0.49.0",
+ "wit-bindgen-core 0.50.0",
+ "wit-bindgen-rust 0.50.0",
 ]
 
 [[package]]

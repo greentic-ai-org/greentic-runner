@@ -1,1 +1,0 @@
-/Users/maarten/Documents/GitHub/agentic/greentic-runner/tests/assets/provider-core-dummy/target/wasm32-wasip2/release/provider_core_dummy.wasm: /Users/maarten/Documents/GitHub/agentic/greentic-runner/tests/assets/provider-core-dummy/src/lib.rs /Users/maarten/Documents/GitHub/agentic/greentic-runner/tests/assets/provider-core-dummy/wit/provider-core.wit

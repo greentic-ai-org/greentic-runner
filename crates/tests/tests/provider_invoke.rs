@@ -337,6 +337,7 @@ fn build_dummy_component() -> Result<PathBuf> {
     let root = fixture_path("tests/assets/provider-core-dummy");
     let wasm = root.join("target/wasm32-wasip2/release/provider_core_dummy.wasm");
     if !wasm.exists() {
+        let offline = std::env::var("CARGO_NET_OFFLINE").ok();
         let status = Command::new("cargo")
             .args([
                 "build",
@@ -346,7 +347,7 @@ fn build_dummy_component() -> Result<PathBuf> {
                 "--manifest-path",
                 root.join("Cargo.toml").to_str().expect("manifest path"),
             ])
-            .env("CARGO_NET_OFFLINE", "true")
+            .envs(offline.map(|val| ("CARGO_NET_OFFLINE", val)))
             .status()
             .context("build provider-core dummy component")?;
         if !status.success() {

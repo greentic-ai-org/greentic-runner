@@ -9,3 +9,4 @@ tests/fixtures/packs/runner-components/manifest.cbor
 examples/packs/*.gtpack
 !examples/packs/demo.gtpack
 .packs/
+tests/assets/provider-core-dummy/target/

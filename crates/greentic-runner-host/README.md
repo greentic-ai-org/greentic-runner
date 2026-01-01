@@ -2,6 +2,8 @@
 
 `greentic-runner-host` packages the Greentic runner as a standalone crate. It owns tenant bindings, the pack watcher, Wasmtime glue, canonical ingress adapters (Telegram, Teams, Slack, WebChat, Webex, WhatsApp, generic webhook, timers), the state machine (pause/resume, session/state persistence), and admin/health endpoints. Binaries such as `greentic-runner` or `greentic-demo` embed this crate instead of vendoring runtime internals.
 
+Provider execution is **provider-core only**: packs declare provider runtimes via the `greentic.ext.provider` extension and invoke them with the `provider.invoke` node, instantiating `greentic:provider/schema-core@1.0.0` components. Legacy typed provider worlds are not supported.
+
 ## Architecture highlights
 
 - **Pack ingestion** – consumes a JSON index (local path, HTTPS, or cloud bucket) via `runner-core`, verifies signatures/digests (`PACK_PUBLIC_KEY`, `PACK_VERIFY_STRICT`), caches artifacts under `PACK_CACHE_DIR`, and supports ordered overlays per tenant.

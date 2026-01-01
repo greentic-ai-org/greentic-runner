@@ -2,15 +2,15 @@ use std::env;
 
 /// Check whether provider-core-only enforcement is enabled.
 ///
-/// The flag is treated as true when the environment variable
-/// `GREENTIC_PROVIDER_CORE_ONLY` is set to `1`, `true`, or `yes`
-/// (case-insensitive).
+/// The flag defaults to enabled. It remains enabled unless the
+/// environment variable `GREENTIC_PROVIDER_CORE_ONLY` is explicitly set
+/// to `0`, `false`, or `no` (case-insensitive).
 pub fn is_enabled() -> bool {
-    matches!(
+    !matches!(
         env::var("GREENTIC_PROVIDER_CORE_ONLY")
             .map(|v| v.to_ascii_lowercase())
             .as_deref(),
-        Ok("1") | Ok("true") | Ok("yes")
+        Ok("0") | Ok("false") | Ok("no")
     )
 }
 

@@ -18,10 +18,6 @@ use crate::runtime_wasmtime::{Component, Engine, Linker, ResourceTable};
 use anyhow::{Context, Result, anyhow, bail};
 use greentic_interfaces_wasmtime::host_helpers::v1::{
     self as host_v1, HostFns, add_all_v1_to_linker,
-    messaging_session::{
-        MessagingSessionError as MessagingError, MessagingSessionHost, OpAck as MessagingAck,
-        OutboundMessage, TenantCtx as MessagingTenantCtx,
-    },
     runner_host_http::RunnerHostHttp,
     runner_host_kv::RunnerHostKv,
     secrets_store::{SecretsError, SecretsStoreHost},
@@ -637,19 +633,6 @@ impl RunnerHostKv for HostState {
     fn put(&mut self, _ns: String, _key: String, _val: String) {}
 }
 
-impl MessagingSessionHost for HostState {
-    fn send(
-        &mut self,
-        _message: OutboundMessage,
-        _ctx: MessagingTenantCtx,
-    ) -> Result<MessagingAck, MessagingError> {
-        Err(MessagingError {
-            code: "unimplemented".into(),
-            message: "messaging session host not wired".into(),
-        })
-    }
-}
-
 enum ManifestLoad {
     New {
         manifest: Box<greentic_types::PackManifest>,
@@ -795,7 +778,6 @@ pub fn register_all(linker: &mut Linker<ComponentState>) -> Result<()> {
             oauth_broker: None,
             runner_host_http: Some(|state| state.host_mut()),
             runner_host_kv: Some(|state| state.host_mut()),
-            messaging_session: Some(|state| state.host_mut()),
             telemetry_logger: Some(|state| state.host_mut()),
             state_store: Some(|state| state.host_mut()),
             secrets_store: Some(|state| state.host_mut()),

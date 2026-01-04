@@ -23,8 +23,8 @@ use once_cell::sync::Lazy;
 use semver::Version;
 use serde_json::{Value, json};
 use tempfile::TempDir;
-use zip::{ZipArchive, ZipWriter};
 use zip::write::FileOptions;
+use zip::{ZipArchive, ZipWriter};
 
 static WASI_POLICY: Lazy<Arc<RunnerWasiPolicy>> = Lazy::new(|| {
     Arc::new(
@@ -401,16 +401,13 @@ fn build_component_pack(
 }
 
 fn component_artifact_path(temp_dir: &Path) -> Result<PathBuf> {
-    let local =
-        fixture_path("tests/fixtures/packs/runner-components/components/qa_process.wasm");
+    let local = fixture_path("tests/fixtures/packs/runner-components/components/qa_process.wasm");
     if local.exists() {
         return Ok(local);
     }
 
-    let archive =
-        fixture_path("tests/fixtures/packs/runner-components/runner-components.gtpack");
-    let mut zip =
-        ZipArchive::new(File::open(&archive).context("open fixture gtpack")?)?;
+    let archive = fixture_path("tests/fixtures/packs/runner-components/runner-components.gtpack");
+    let mut zip = ZipArchive::new(File::open(&archive).context("open fixture gtpack")?)?;
     let mut wasm = zip
         .by_name("components/qa.process@0.1.0/component.wasm")
         .context("qa.process component missing from fixture pack")?;

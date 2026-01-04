@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, HashMap};
-use std::io::Write;
+use std::fs::File;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::str::FromStr;
@@ -22,7 +23,7 @@ use once_cell::sync::Lazy;
 use semver::Version;
 use serde_json::{Value, json};
 use tempfile::TempDir;
-use zip::ZipWriter;
+use zip::{ZipArchive, ZipWriter};
 use zip::write::FileOptions;
 
 static WASI_POLICY: Lazy<Arc<RunnerWasiPolicy>> = Lazy::new(|| {
@@ -193,8 +194,7 @@ async fn provider_invoke_supports_messaging_secrets_events() -> Result<()> {
 async fn component_exec_carries_operation_from_flow() -> Result<()> {
     let config = write_minimal_config()?;
     let temp = TempDir::new()?;
-    let component_path =
-        fixture_path("tests/fixtures/packs/runner-components/components/qa_process.wasm");
+    let component_path = component_artifact_path(temp.path())?;
 
     let flow_a = build_component_exec_flow("pack-a.flow", "pack A")?;
     let flow_b = build_component_exec_flow("pack-b.flow", "pack B")?;
@@ -398,6 +398,27 @@ fn build_component_pack(
     std::io::copy(&mut file, &mut writer)?;
     writer.finish().context("finalise component pack")?;
     Ok(())
+}
+
+fn component_artifact_path(temp_dir: &Path) -> Result<PathBuf> {
+    let local =
+        fixture_path("tests/fixtures/packs/runner-components/components/qa_process.wasm");
+    if local.exists() {
+        return Ok(local);
+    }
+
+    let archive =
+        fixture_path("tests/fixtures/packs/runner-components/runner-components.gtpack");
+    let mut zip =
+        ZipArchive::new(File::open(&archive).context("open fixture gtpack")?)?;
+    let mut wasm = zip
+        .by_name("components/qa.process@0.1.0/component.wasm")
+        .context("qa.process component missing from fixture pack")?;
+    let out = temp_dir.join("qa_process.wasm");
+    let mut buf = Vec::new();
+    wasm.read_to_end(&mut buf)?;
+    std::fs::write(&out, &buf)?;
+    Ok(out)
 }
 
 fn provider_extension() -> BTreeMap<String, greentic_types::ExtensionRef> {

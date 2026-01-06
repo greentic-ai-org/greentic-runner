@@ -68,6 +68,27 @@ fn fixtures_pack_root() -> PathBuf {
     workspace_root().join("tests/fixtures/packs/runner-components")
 }
 
+fn read_fixture_manifest_bytes() -> Result<Vec<u8>> {
+    let manifest_path = fixtures_pack_root().join("manifest.cbor");
+    match fs::read(&manifest_path) {
+        Ok(bytes) => Ok(bytes),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            let archive_path = fixtures_pack_root().join("runner-components.gtpack");
+            let file = fs::File::open(&archive_path).with_context(|| {
+                format!("failed to open fixture archive {}", archive_path.display())
+            })?;
+            let mut archive = ZipArchive::new(file)?;
+            let mut entry = archive
+                .by_name("manifest.cbor")
+                .context("missing manifest.cbor in fixture archive")?;
+            let mut bytes = Vec::new();
+            entry.read_to_end(&mut bytes)?;
+            Ok(bytes)
+        }
+        Err(err) => Err(err.into()),
+    }
+}
+
 #[derive(Deserialize)]
 struct FixtureManifestJson {
     components: Vec<FixtureComponentJson>,
@@ -142,13 +163,7 @@ fn load_manifest_json(
 }
 
 fn load_fixture_manifest() -> Result<FixtureManifest> {
-    let manifest_path = fixtures_pack_root().join("manifest.cbor");
-    let bytes = fs::read(&manifest_path).with_context(|| {
-        format!(
-            "failed to read fixture manifest {}",
-            manifest_path.display()
-        )
-    })?;
+    let bytes = read_fixture_manifest_bytes()?;
 
     let yaml_flows = load_pack_yaml_flows().unwrap_or_default();
 

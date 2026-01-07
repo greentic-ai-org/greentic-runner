@@ -64,7 +64,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "rt", "signal"
 tokio-util = "0.7"
 tower = "0.5"
 tracing = "0.1"
-wasmparser = "0.243"
+wasmparser = "0.244"
 cron = "0.15"
 uuid = { version = "1", features = ["v4"] }
 url = "2"

@@ -14,13 +14,19 @@ pub fn analyze_component(path: &std::path::Path) -> Result<ComponentFeatures> {
     let mut features = ComponentFeatures::default();
     for payload in Parser::new(0).parse_all(&wasm) {
         if let Payload::ImportSection(section) = payload? {
-            for import in section {
-                let import = import?;
-                match import.module {
+            for imports in section {
+                let imports = imports?;
+                let module = match imports {
+                    wasmparser::Imports::Single(_, import) => import.module,
+                    wasmparser::Imports::Compact1 { module, .. } => module,
+                    wasmparser::Imports::Compact2 { module, .. } => module,
+                };
+                match module {
                     "greentic:host/http-v1" => features.http = true,
                     "greentic:host/secrets-v1" => features.secrets = true,
-                    "greentic:host/filesystem-v1" => features.filesystem = true,
-                    "greentic:host/kv-v1" => features.filesystem = true,
+                    "greentic:host/filesystem-v1" | "greentic:host/kv-v1" => {
+                        features.filesystem = true;
+                    }
                     _ => (),
                 }
             }

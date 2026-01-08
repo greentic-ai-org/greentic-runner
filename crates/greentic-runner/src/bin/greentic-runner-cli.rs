@@ -59,6 +59,14 @@ struct Cli {
     #[arg(long, value_name = "DIR")]
     artifacts_dir: Option<PathBuf>,
 
+    /// Do not fetch remote components (requires cached artifacts)
+    #[arg(long)]
+    offline: bool,
+
+    /// Override the component cache directory
+    #[arg(long, value_name = "DIR")]
+    cache_dir: Option<PathBuf>,
+
     /// Enforce strict signing (default is DevOk)
     #[arg(long)]
     strict_signing: bool,
@@ -146,6 +154,8 @@ fn main() -> Result<()> {
         opts.signing = signing;
         opts.components_dir = cli.components_dir.clone();
         opts.components_map = components_map.clone();
+        opts.dist_offline = cli.offline;
+        opts.dist_cache_dir = cli.cache_dir.clone();
     });
 
     let result = runner

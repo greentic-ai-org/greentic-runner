@@ -16,6 +16,7 @@ use crate::provider_core::SchemaCorePre as ProviderComponentPre;
 use crate::provider_core_only;
 use crate::runtime_wasmtime::{Component, Engine, Linker, ResourceTable};
 use anyhow::{Context, Result, anyhow, bail};
+use greentic_distributor_client::dist::{DistClient, DistError, DistOptions};
 use greentic_interfaces_wasmtime::host_helpers::v1::{
     self as host_v1, HostFns, add_all_v1_to_linker,
     runner_host_http::RunnerHostHttp,
@@ -36,9 +37,10 @@ use greentic_interfaces_wasmtime::http_client_client_v1_1::greentic::interfaces_
 use greentic_pack::builder as legacy_pack;
 use greentic_types::flow::FlowHasher;
 use greentic_types::{
-    ComponentId, EnvId, ExtensionRef, Flow, FlowComponentRef, FlowId, FlowKind, FlowMetadata,
-    InputMapping, Node, NodeId, OutputMapping, Routing, StateKey as StoreStateKey, TeamId,
-    TelemetryHints, TenantCtx as TypesTenantCtx, TenantId, UserId, decode_pack_manifest,
+    ArtifactLocationV1, ComponentId, ComponentSourceRef, EXT_COMPONENT_SOURCES_V1, EnvId,
+    ExtensionRef, Flow, FlowComponentRef, FlowId, FlowKind, FlowMetadata, InputMapping, Node,
+    NodeId, OutputMapping, Routing, StateKey as StoreStateKey, TeamId, TelemetryHints,
+    TenantCtx as TypesTenantCtx, TenantId, UserId, decode_pack_manifest,
     pack_manifest::ExtensionInline,
 };
 use host_v1::http_client::{
@@ -55,6 +57,7 @@ use runner_core::normalize_under_root;
 use serde::{Deserialize, Serialize};
 use serde_cbor;
 use serde_json::{self, Value};
+use sha2::Digest;
 use tokio::fs;
 use wasmparser::{Parser, Payload};
 use wasmtime::StoreContextMut;
@@ -114,6 +117,10 @@ pub struct ComponentResolution {
     pub materialized_root: Option<PathBuf>,
     /// Explicit overrides mapping component id -> wasm path.
     pub overrides: HashMap<String, PathBuf>,
+    /// If true, do not fetch remote components; require cached artifacts.
+    pub dist_offline: bool,
+    /// Optional cache directory for resolved remote components.
+    pub dist_cache_dir: Option<PathBuf>,
 }
 
 fn build_blocking_client() -> BlockingClient {
@@ -1017,6 +1024,11 @@ impl PackRuntime {
                 }
             }
         }
+        let component_sources = if let Some(manifest) = manifest.as_ref() {
+            component_sources_table(manifest).context("invalid component sources extension")?
+        } else {
+            None
+        };
         let components = if is_component {
             let wasm_bytes = fs::read(&safe_path).await?;
             metadata = PackMetadata::from_wasm(&wasm_bytes)
@@ -1055,6 +1067,21 @@ impl PackRuntime {
                         &mut loaded,
                     )?;
                     searched.push("override map".to_string());
+                }
+
+                if let Some(component_sources) = component_sources.as_ref() {
+                    load_components_from_sources(
+                        &engine,
+                        component_sources,
+                        &component_resolution,
+                        &specs,
+                        &mut missing,
+                        &mut loaded,
+                        materialized_root.as_deref(),
+                        archive_hint,
+                    )
+                    .await?;
+                    searched.push(format!("extension {}", EXT_COMPONENT_SOURCES_V1));
                 }
 
                 if let Some(root) = materialized_root.as_ref() {
@@ -1755,6 +1782,19 @@ struct ComponentSpec {
     legacy_path: Option<String>,
 }
 
+#[derive(Clone, Debug)]
+struct ComponentSourceInfo {
+    digest: String,
+    source: ComponentSourceRef,
+    artifact: ComponentArtifactLocation,
+}
+
+#[derive(Clone, Debug)]
+enum ComponentArtifactLocation {
+    Inline { wasm_path: String },
+    Remote,
+}
+
 fn component_specs(
     manifest: Option<&greentic_types::PackManifest>,
     legacy_manifest: Option<&legacy_pack::PackManifest>,
@@ -1784,11 +1824,239 @@ fn component_specs(
     Vec::new()
 }
 
+fn component_sources_table(
+    manifest: &greentic_types::PackManifest,
+) -> Result<Option<HashMap<String, ComponentSourceInfo>>> {
+    let Some(sources) = manifest.get_component_sources_v1()? else {
+        return Ok(None);
+    };
+    let mut table = HashMap::new();
+    for entry in sources.components {
+        let artifact = match entry.artifact {
+            ArtifactLocationV1::Inline { wasm_path, .. } => {
+                ComponentArtifactLocation::Inline { wasm_path }
+            }
+            ArtifactLocationV1::Remote => ComponentArtifactLocation::Remote,
+        };
+        let info = ComponentSourceInfo {
+            digest: entry.resolved.digest,
+            source: entry.source,
+            artifact,
+        };
+        if let Some(component_id) = entry.component_id.as_ref() {
+            table.insert(component_id.as_str().to_string(), info.clone());
+        }
+        table.insert(entry.name, info);
+    }
+    Ok(Some(table))
+}
+
 fn component_path_for_spec(root: &Path, spec: &ComponentSpec) -> PathBuf {
     if let Some(path) = &spec.legacy_path {
         return root.join(path);
     }
     root.join("components").join(format!("{}.wasm", spec.id))
+}
+
+fn normalize_digest(digest: &str) -> String {
+    if digest.starts_with("sha256:") || digest.starts_with("blake3:") {
+        digest.to_string()
+    } else {
+        format!("sha256:{digest}")
+    }
+}
+
+fn compute_digest_for(bytes: &[u8], digest: &str) -> Result<String> {
+    if digest.starts_with("blake3:") {
+        let hash = blake3::hash(bytes);
+        return Ok(format!("blake3:{}", hash.to_hex()));
+    }
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(bytes);
+    Ok(format!("sha256:{:x}", hasher.finalize()))
+}
+
+fn verify_component_digest(component_id: &str, expected: &str, bytes: &[u8]) -> Result<()> {
+    let normalized_expected = normalize_digest(expected);
+    let actual = compute_digest_for(bytes, &normalized_expected)?;
+    if normalize_digest(&actual) != normalized_expected {
+        bail!(
+            "component {component_id} digest mismatch: expected {normalized_expected}, got {actual}"
+        );
+    }
+    Ok(())
+}
+
+fn dist_options_from(component_resolution: &ComponentResolution) -> DistOptions {
+    let mut opts = DistOptions {
+        allow_tags: true,
+        ..DistOptions::default()
+    };
+    if let Some(cache_dir) = component_resolution.dist_cache_dir.clone() {
+        opts.cache_dir = cache_dir;
+    }
+    if component_resolution.dist_offline {
+        opts.offline = true;
+    }
+    opts
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn load_components_from_sources(
+    engine: &Engine,
+    component_sources: &HashMap<String, ComponentSourceInfo>,
+    component_resolution: &ComponentResolution,
+    specs: &[ComponentSpec],
+    missing: &mut HashSet<String>,
+    into: &mut HashMap<String, PackComponent>,
+    materialized_root: Option<&Path>,
+    archive_hint: Option<&Path>,
+) -> Result<()> {
+    let mut archive = if let Some(path) = archive_hint {
+        Some(
+            ZipArchive::new(File::open(path)?)
+                .with_context(|| format!("{} is not a valid gtpack", path.display()))?,
+        )
+    } else {
+        None
+    };
+    let mut dist_client: Option<DistClient> = None;
+
+    for spec in specs {
+        if !missing.contains(&spec.id) {
+            continue;
+        }
+        let Some(source) = component_sources.get(&spec.id) else {
+            continue;
+        };
+
+        let bytes = match &source.artifact {
+            ComponentArtifactLocation::Inline { wasm_path } => {
+                if let Some(root) = materialized_root {
+                    let path = root.join(wasm_path);
+                    if path.exists() {
+                        std::fs::read(&path).with_context(|| {
+                            format!(
+                                "failed to read inline component {} from {}",
+                                spec.id,
+                                path.display()
+                            )
+                        })?
+                    } else if archive.is_none() {
+                        bail!("inline component {} missing at {}", spec.id, path.display());
+                    } else {
+                        read_entry(
+                            archive.as_mut().expect("archive present when needed"),
+                            wasm_path,
+                        )
+                        .with_context(|| {
+                            format!(
+                                "inline component {} missing at {} in pack archive",
+                                spec.id, wasm_path
+                            )
+                        })?
+                    }
+                } else if let Some(archive) = archive.as_mut() {
+                    read_entry(archive, wasm_path).with_context(|| {
+                        format!(
+                            "inline component {} missing at {} in pack archive",
+                            spec.id, wasm_path
+                        )
+                    })?
+                } else {
+                    bail!(
+                        "inline component {} missing and no pack source available",
+                        spec.id
+                    );
+                }
+            }
+            ComponentArtifactLocation::Remote => {
+                let client = dist_client.get_or_insert_with(|| {
+                    DistClient::new(dist_options_from(component_resolution))
+                });
+                let reference = source.source.to_string();
+                let cache_path = if component_resolution.dist_offline {
+                    client
+                        .fetch_digest(&source.digest)
+                        .await
+                        .map_err(|err| dist_error_for_component(err, &spec.id, &reference))?
+                } else {
+                    let resolved = client
+                        .resolve_ref(&reference)
+                        .await
+                        .map_err(|err| dist_error_for_component(err, &spec.id, &reference))?;
+                    let expected = normalize_digest(&source.digest);
+                    let actual = normalize_digest(&resolved.digest);
+                    if expected != actual {
+                        bail!(
+                            "component {} digest mismatch after fetch: expected {}, got {}",
+                            spec.id,
+                            expected,
+                            actual
+                        );
+                    }
+                    resolved.cache_path.ok_or_else(|| {
+                        anyhow!(
+                            "component {} resolved from {} but cache path is missing",
+                            spec.id,
+                            reference
+                        )
+                    })?
+                };
+                std::fs::read(&cache_path).with_context(|| {
+                    format!(
+                        "failed to read cached component {} from {}",
+                        spec.id,
+                        cache_path.display()
+                    )
+                })?
+            }
+        };
+
+        verify_component_digest(&spec.id, &source.digest, &bytes)?;
+        let component = Component::from_binary(engine, &bytes)
+            .with_context(|| format!("failed to compile component {}", spec.id))?;
+        into.insert(
+            spec.id.clone(),
+            PackComponent {
+                name: spec.id.clone(),
+                version: spec.version.clone(),
+                component,
+            },
+        );
+        missing.remove(&spec.id);
+    }
+
+    Ok(())
+}
+
+fn dist_error_for_component(err: DistError, component_id: &str, reference: &str) -> anyhow::Error {
+    match err {
+        DistError::CacheMiss { reference: missing } => anyhow!(
+            "remote component {} is not cached for {}. Run `greentic-dist pull --lock <pack.lock>` or `greentic-dist pull {}`",
+            component_id,
+            missing,
+            reference
+        ),
+        DistError::Offline { reference: blocked } => anyhow!(
+            "offline mode blocked fetching component {} from {}; run `greentic-dist pull --lock <pack.lock>` or `greentic-dist pull {}`",
+            component_id,
+            blocked,
+            reference
+        ),
+        DistError::AuthRequired { target } => anyhow!(
+            "component {} requires authenticated source {}; run `greentic-dist pull --lock <pack.lock>` or `greentic-dist pull {}`",
+            component_id,
+            target,
+            reference
+        ),
+        other => anyhow!(
+            "failed to resolve component {} from {}: {}",
+            component_id,
+            reference,
+            other
+        ),
+    }
 }
 
 fn load_components_from_overrides(

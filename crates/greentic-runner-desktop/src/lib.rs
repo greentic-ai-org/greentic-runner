@@ -113,6 +113,8 @@ pub struct RunOptions {
     pub signing: SigningPolicy,
     pub components_dir: Option<PathBuf>,
     pub components_map: HashMap<String, PathBuf>,
+    pub dist_offline: bool,
+    pub dist_cache_dir: Option<PathBuf>,
 }
 
 impl Default for RunOptions {
@@ -135,6 +137,8 @@ impl fmt::Debug for RunOptions {
             .field("signing", &self.signing)
             .field("components_dir", &self.components_dir)
             .field("components_map_len", &self.components_map.len())
+            .field("dist_offline", &self.dist_offline)
+            .field("dist_cache_dir", &self.dist_cache_dir)
             .finish()
     }
 }
@@ -221,6 +225,8 @@ pub fn desktop_defaults() -> RunOptions {
         signing: SigningPolicy::DevOk,
         components_dir: None,
         components_map: HashMap::new(),
+        dist_offline: false,
+        dist_cache_dir: None,
     }
 }
 
@@ -282,6 +288,8 @@ async fn run_pack_async(pack_path: &Path, opts: RunOptions) -> Result<RunResult>
         component_resolution.materialized_root = Some(pack_path.clone());
     }
     component_resolution.overrides = opts.components_map.clone();
+    component_resolution.dist_offline = opts.dist_offline;
+    component_resolution.dist_cache_dir = opts.dist_cache_dir.clone();
     let archive_source = if pack_path
         .extension()
         .and_then(|ext| ext.to_str())

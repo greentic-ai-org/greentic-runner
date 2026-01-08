@@ -400,6 +400,7 @@ fn prefers_materialized_components_over_archive() -> Result<()> {
         ComponentResolution {
             materialized_root: Some(materialized_root.clone()),
             overrides: HashMap::new(),
+            ..ComponentResolution::default()
         },
     ))?;
 
@@ -442,6 +443,7 @@ fn falls_back_to_archive_when_materialized_missing_components() -> Result<()> {
         ComponentResolution {
             materialized_root: Some(materialized_root.clone()),
             overrides: HashMap::new(),
+            ..ComponentResolution::default()
         },
     ))?;
 
@@ -486,6 +488,7 @@ fn errors_when_components_missing_from_all_sources() -> Result<()> {
             ComponentResolution {
                 materialized_root: Some(materialized_root.clone()),
                 overrides: HashMap::new(),
+                ..ComponentResolution::default()
             },
         ))
         .err()

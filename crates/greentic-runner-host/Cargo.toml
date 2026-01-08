@@ -29,6 +29,7 @@ greentic-interfaces-wasmtime.workspace = true
 greentic-interfaces.workspace = true
 greentic-types.workspace = true
 greentic-pack.workspace = true
+greentic-distributor-client.workspace = true
 greentic-session.workspace = true
 greentic-state.workspace = true
 greentic-secrets.workspace = true
@@ -59,6 +60,7 @@ bytes.workspace = true
 futures.workspace = true
 hmac.workspace = true
 sha1.workspace = true
+blake3.workspace = true
 once_cell.workspace = true
 
 # External stack components

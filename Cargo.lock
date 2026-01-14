@@ -1590,9 +1590,10 @@ dependencies = [
 
 [[package]]
 name = "greentic-runner"
-version = "0.4.29"
+version = "0.4.30"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "chrono",
  "clap",
  "greentic-config",
@@ -1611,15 +1612,17 @@ dependencies = [
  "tokio",
  "toml",
  "tracing",
+ "tracing-subscriber",
  "url",
  "wasmparser 0.244.0",
  "wasmtime",
  "wasmtime-wasi",
+ "zip",
 ]
 
 [[package]]
 name = "greentic-runner-desktop"
-version = "0.4.29"
+version = "0.4.30"
 dependencies = [
  "anyhow",
  "greentic-pack-lib",
@@ -1638,7 +1641,7 @@ dependencies = [
 
 [[package]]
 name = "greentic-runner-host"
-version = "0.4.29"
+version = "0.4.30"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -1696,7 +1699,7 @@ dependencies = [
 
 [[package]]
 name = "greentic-runner-tests"
-version = "0.4.29"
+version = "0.4.30"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3431,7 +3434,7 @@ dependencies = [
 
 [[package]]
 name = "runner-core"
-version = "0.4.29"
+version = "0.4.30"
 dependencies = [
  "anyhow",
  "base64 0.22.1",

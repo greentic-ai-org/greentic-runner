@@ -313,6 +313,9 @@ impl FlowEngine {
                 .await?;
 
             state.nodes.insert(node_id.clone().into(), output.clone());
+            if let Some(observer) = ctx.observer {
+                observer.on_node_end(&event, &output.payload);
+            }
 
             let (next, should_exit) = match &node.routing {
                 Routing::Next { node_id } => (Some(node_id.clone()), false),
@@ -1059,7 +1062,14 @@ fn emit_ref_from_kind(kind: &EmitKind) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use greentic_types::{
+        Flow, FlowComponentRef, FlowId, FlowKind, InputMapping, Node, NodeId, OutputMapping,
+        Routing, TelemetryHints,
+    };
     use serde_json::json;
+    use std::collections::BTreeMap;
+    use std::str::FromStr;
+    use std::sync::Mutex;
     use tokio::runtime::Runtime;
 
     fn minimal_engine() -> FlowEngine {
@@ -1231,6 +1241,101 @@ mod tests {
             message.contains("Found operation in input.mapping (`render`)"),
             "unexpected message: {message}"
         );
+    }
+
+    struct CountingObserver {
+        starts: Mutex<Vec<String>>,
+        ends: Mutex<Vec<Value>>,
+    }
+
+    impl CountingObserver {
+        fn new() -> Self {
+            Self {
+                starts: Mutex::new(Vec::new()),
+                ends: Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    impl ExecutionObserver for CountingObserver {
+        fn on_node_start(&self, event: &NodeEvent<'_>) {
+            self.starts.lock().unwrap().push(event.node_id.to_string());
+        }
+
+        fn on_node_end(&self, _event: &NodeEvent<'_>, output: &Value) {
+            self.ends.lock().unwrap().push(output.clone());
+        }
+
+        fn on_node_error(&self, _event: &NodeEvent<'_>, _error: &dyn StdError) {}
+    }
+
+    #[test]
+    fn emits_end_event_for_successful_node() {
+        let node_id = NodeId::from_str("emit").unwrap();
+        let node = Node {
+            id: node_id.clone(),
+            component: FlowComponentRef {
+                id: "emit.log".parse().unwrap(),
+                pack_alias: None,
+                operation: None,
+            },
+            input: InputMapping {
+                mapping: json!({ "message": "logged" }),
+            },
+            output: OutputMapping {
+                mapping: Value::Null,
+            },
+            routing: Routing::End,
+            telemetry: TelemetryHints::default(),
+        };
+        let mut nodes = indexmap::IndexMap::default();
+        nodes.insert(node_id.clone(), node);
+        let flow = Flow {
+            schema_version: "1.0".into(),
+            id: FlowId::from_str("emit.flow").unwrap(),
+            kind: FlowKind::Messaging,
+            entrypoints: BTreeMap::from([(
+                "default".to_string(),
+                Value::String(node_id.to_string()),
+            )]),
+            nodes,
+            metadata: Default::default(),
+        };
+        let host_flow = HostFlow::from(flow);
+
+        let engine = FlowEngine {
+            packs: Vec::new(),
+            flows: Vec::new(),
+            flow_sources: HashMap::new(),
+            flow_cache: RwLock::new(HashMap::from([("emit.flow".to_string(), host_flow)])),
+            default_env: "local".to_string(),
+        };
+        let observer = CountingObserver::new();
+        let ctx = FlowContext {
+            tenant: "demo",
+            flow_id: "emit.flow",
+            node_id: None,
+            tool: None,
+            action: None,
+            session_id: None,
+            provider_id: None,
+            retry_config: RetryConfig {
+                max_attempts: 1,
+                base_delay_ms: 1,
+            },
+            observer: Some(&observer),
+            mocks: None,
+        };
+
+        let rt = Runtime::new().unwrap();
+        let result = rt.block_on(engine.execute(ctx, Value::Null)).unwrap();
+        assert!(matches!(result.status, FlowStatus::Completed));
+
+        let starts = observer.starts.lock().unwrap();
+        let ends = observer.ends.lock().unwrap();
+        assert_eq!(starts.len(), 1);
+        assert_eq!(ends.len(), 1);
+        assert_eq!(ends[0], json!({ "message": "logged" }));
     }
 }
 

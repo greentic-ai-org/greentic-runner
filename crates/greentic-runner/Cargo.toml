@@ -16,6 +16,7 @@ bin = ["greentic-runner", "greentic-runner-cli"]
 
 [dependencies]
 anyhow.workspace = true
+base64.workspace = true
 clap.workspace = true
 greentic-runner-host = { workspace = true }
 greentic-runner-desktop = { workspace = true }
@@ -32,12 +33,14 @@ wasmtime-wasi.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+tracing-subscriber.workspace = true
 serde_yaml_bw.workspace = true
 serde.workspace = true
 wasmparser.workspace = true
 url.workspace = true
 indexmap.workspace = true
 toml.workspace = true
+zip.workspace = true
 
 [lib]
 name = "greentic_runner"

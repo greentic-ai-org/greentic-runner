@@ -34,5 +34,7 @@ jobs:
           CI: "1"
           RUN_HOST: "never"
           CARGO_NET_OFFLINE: "false"
+          CARGO_BUILD_JOBS: "1"
+          CARGO_INCREMENTAL: "0"
         run: |
           bash ci/local_check.sh

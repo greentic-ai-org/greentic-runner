@@ -42,6 +42,9 @@ jobs:
           CARGO_NET_OFFLINE: "false"
           CARGO_BUILD_JOBS: "1"
           CARGO_INCREMENTAL: "0"
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          CARGO_PROFILE_TEST_DEBUG: "0"
+          CARGO_PROFILE_RELEASE_DEBUG: "0"
           LOCAL_CHECK_STEPS: ${{ matrix.step }}
           LOCAL_CHECK_PACKAGE: ${{ matrix.step == 'package' && '1' || '0' }}
         run: |

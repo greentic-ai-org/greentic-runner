@@ -36,7 +36,7 @@ use greentic_interfaces_wasmtime::http_client_client_v1_1::greentic::interfaces_
 use greentic_pack::builder as legacy_pack;
 use greentic_types::flow::FlowHasher;
 use greentic_types::{
-    ArtifactLocationV1, ComponentId, ComponentManifest, ComponentSourceRef,
+    ArtifactLocationV1, ComponentId, ComponentManifest, ComponentSourceRef, ComponentSourcesV1,
     EXT_COMPONENT_SOURCES_V1, EnvId, ExtensionRef, Flow, FlowComponentRef, FlowId, FlowKind,
     FlowMetadata, InputMapping, Node, NodeId, OutputMapping, Routing, StateKey as StoreStateKey,
     TeamId, TelemetryHints, TenantCtx as TypesTenantCtx, TenantId, UserId, decode_pack_manifest,
@@ -1096,11 +1096,14 @@ impl PackRuntime {
                 }
             }
         }
-        let component_sources = if let Some(manifest) = manifest.as_ref() {
-            component_sources_table(manifest).context("invalid component sources extension")?
+        let component_sources_payload = if let Some(manifest) = manifest.as_ref() {
+            manifest
+                .get_component_sources_v1()
+                .context("invalid component sources extension")?
         } else {
             None
         };
+        let component_sources = component_sources_table(component_sources_payload.as_ref())?;
         let components = if is_component {
             let wasm_bytes = fs::read(&safe_path).await?;
             metadata = PackMetadata::from_wasm(&wasm_bytes)
@@ -1121,7 +1124,11 @@ impl PackRuntime {
             );
             map
         } else {
-            let specs = component_specs(manifest.as_ref(), legacy_manifest.as_deref());
+            let specs = component_specs(
+                manifest.as_ref(),
+                legacy_manifest.as_deref(),
+                component_sources_payload.as_ref(),
+            );
             if specs.is_empty() {
                 HashMap::new()
             } else {
@@ -1906,17 +1913,39 @@ enum ComponentArtifactLocation {
 fn component_specs(
     manifest: Option<&greentic_types::PackManifest>,
     legacy_manifest: Option<&legacy_pack::PackManifest>,
+    component_sources: Option<&ComponentSourcesV1>,
 ) -> Vec<ComponentSpec> {
     if let Some(manifest) = manifest {
-        return manifest
-            .components
-            .iter()
-            .map(|entry| ComponentSpec {
-                id: entry.id.as_str().to_string(),
-                version: entry.version.to_string(),
-                legacy_path: None,
-            })
-            .collect();
+        if !manifest.components.is_empty() {
+            return manifest
+                .components
+                .iter()
+                .map(|entry| ComponentSpec {
+                    id: entry.id.as_str().to_string(),
+                    version: entry.version.to_string(),
+                    legacy_path: None,
+                })
+                .collect();
+        }
+        if let Some(sources) = component_sources {
+            let mut seen = HashSet::new();
+            let mut specs = Vec::new();
+            for entry in &sources.components {
+                let id = entry
+                    .component_id
+                    .as_ref()
+                    .map(|id| id.as_str())
+                    .unwrap_or(entry.name.as_str());
+                if seen.insert(id.to_string()) {
+                    specs.push(ComponentSpec {
+                        id: id.to_string(),
+                        version: "0.0.0".to_string(),
+                        legacy_path: None,
+                    });
+                }
+            }
+            return specs;
+        }
     }
     if let Some(legacy_manifest) = legacy_manifest {
         return legacy_manifest
@@ -1933,28 +1962,28 @@ fn component_specs(
 }
 
 fn component_sources_table(
-    manifest: &greentic_types::PackManifest,
+    sources: Option<&ComponentSourcesV1>,
 ) -> Result<Option<HashMap<String, ComponentSourceInfo>>> {
-    let Some(sources) = manifest.get_component_sources_v1()? else {
+    let Some(sources) = sources else {
         return Ok(None);
     };
     let mut table = HashMap::new();
-    for entry in sources.components {
-        let artifact = match entry.artifact {
-            ArtifactLocationV1::Inline { wasm_path, .. } => {
-                ComponentArtifactLocation::Inline { wasm_path }
-            }
+    for entry in &sources.components {
+        let artifact = match &entry.artifact {
+            ArtifactLocationV1::Inline { wasm_path, .. } => ComponentArtifactLocation::Inline {
+                wasm_path: wasm_path.clone(),
+            },
             ArtifactLocationV1::Remote => ComponentArtifactLocation::Remote,
         };
         let info = ComponentSourceInfo {
-            digest: entry.resolved.digest,
-            source: entry.source,
+            digest: entry.resolved.digest.clone(),
+            source: entry.source.clone(),
             artifact,
         };
         if let Some(component_id) = entry.component_id.as_ref() {
             table.insert(component_id.as_str().to_string(), info.clone());
         }
-        table.insert(entry.name, info);
+        table.insert(entry.name.clone(), info);
     }
     Ok(Some(table))
 }

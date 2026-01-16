@@ -206,6 +206,60 @@ fn build_pack_with_component_sources(
     Ok(())
 }
 
+fn build_pack_with_component_sources_only(
+    pack_path: &Path,
+    sources_payload: ComponentSourcesV1,
+    include_components: bool,
+) -> Result<()> {
+    let fixtures = workspace_root().join("tests/fixtures/packs/runner-components");
+    let flow_yaml =
+        std::fs::read_to_string(fixtures.join("flows/demo.yaml")).context("read flow yaml")?;
+    let (_bundle, flow) = load_and_validate_bundle_with_flow(&flow_yaml, None)?;
+
+    let mut manifest = PackManifest {
+        schema_version: "1.0".into(),
+        pack_id: "runner.components.sources-only".parse()?,
+        version: Version::parse("0.0.0")?,
+        kind: PackKind::Application,
+        publisher: "test".into(),
+        components: Vec::new(),
+        flows: vec![PackFlowEntry {
+            id: flow.id.clone(),
+            kind: flow.kind,
+            flow: flow.clone(),
+            tags: Vec::new(),
+            entrypoints: vec!["default".into()],
+        }],
+        dependencies: Vec::new(),
+        capabilities: Vec::new(),
+        signatures: Default::default(),
+        secret_requirements: Vec::new(),
+        bootstrap: None,
+        extensions: None,
+    };
+    manifest.set_component_sources_v1(sources_payload)?;
+
+    let mut writer =
+        ZipWriter::new(std::fs::File::create(pack_path).context("create pack archive for test")?);
+    let options: FileOptions<'_, ()> =
+        FileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    let manifest_bytes = encode_pack_manifest(&manifest)?;
+    writer.start_file("manifest.cbor", options)?;
+    writer.write_all(&manifest_bytes)?;
+
+    if include_components {
+        for (id, artifact_path) in component_sources(&fixtures)? {
+            writer.start_file(format!("components/{id}.wasm"), options)?;
+            let mut file = std::fs::File::open(&artifact_path)
+                .with_context(|| format!("open component {}", artifact_path.display()))?;
+            std::io::copy(&mut file, &mut writer)?;
+        }
+    }
+
+    writer.finish().context("finalise test pack")?;
+    Ok(())
+}
+
 fn component_sources(fixtures_root: &Path) -> Result<Vec<(String, PathBuf)>> {
     let workspace_root = workspace_root();
     let crates_root = workspace_root.join("tests/fixtures/runner-components");
@@ -608,6 +662,67 @@ fn gtpack_manifest_offline_errors_when_remote_component_missing() -> Result<()> 
         message.contains("greentic-dist pull"),
         "error should suggest greentic-dist pull: {message}"
     );
+    Ok(())
+}
+
+#[test]
+fn gtpack_manifest_component_sources_only_loads_components() -> Result<()> {
+    let rt = *RUNTIME;
+    let temp = TempDir::new()?;
+    let gtpack = temp.path().join("runner-components-sources-only.gtpack");
+    let bindings_path = temp.path().join("bindings.yaml");
+    std::fs::write(&bindings_path, b"tenant: demo")?;
+
+    let fixtures = workspace_root().join("tests/fixtures/packs/runner-components");
+    let mut entries = Vec::new();
+    for (id, artifact_path) in component_sources(&fixtures)? {
+        let bytes = std::fs::read(&artifact_path)?;
+        let digest = digest_for_bytes(&bytes);
+        entries.push(ComponentSourceEntryV1 {
+            name: format!("{id}-alias"),
+            component_id: Some(id.clone().parse()?),
+            source: ComponentSourceRef::Oci(format!("registry.test/{id}@{}", digest)),
+            resolved: ResolvedComponentV1 {
+                digest,
+                signature: None,
+                signed_by: None,
+            },
+            artifact: ArtifactLocationV1::Inline {
+                wasm_path: format!("components/{id}.wasm"),
+                manifest_path: None,
+            },
+            licensing_hint: None,
+            metering_hint: None,
+        });
+    }
+
+    let sources = ComponentSourcesV1::new(entries);
+    build_pack_with_component_sources_only(&gtpack, sources, true)?;
+
+    let config = Arc::new(host_config(&bindings_path));
+    let runtime = Arc::new(rt.block_on(PackRuntime::load(
+        &gtpack,
+        Arc::clone(&config),
+        None,
+        None,
+        None,
+        None,
+        Arc::new(RunnerWasiPolicy::new()),
+        greentic_runner_host::secrets::default_manager(),
+        None,
+        false,
+        ComponentResolution::default(),
+    ))?);
+
+    let ctx = demo_exec_ctx("qa");
+    let result = rt.block_on(runtime.invoke_component(
+        "qa.process",
+        ctx,
+        "process",
+        None,
+        serde_json::to_string(&json!({ "text": "hello" }))?,
+    ))?;
+    assert_eq!(result, json!({ "text": "hello" }));
     Ok(())
 }
 

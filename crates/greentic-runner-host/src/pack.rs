@@ -2363,9 +2363,8 @@ mod pack_lock_tests {
         let rt = tokio::runtime::Runtime::new().expect("runtime");
         let temp = TempDir::new().expect("temp dir");
         let wasm_path = temp.path().join("component.wasm");
-        let fixture_root =
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/runner-components");
-        let fixture_wasm = fixture_root.join("target/wasm32-wasip2/release/qa_process.wasm");
+        let fixture_wasm = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/packs/secrets_store_smoke/components/echo_secret.wasm");
         let bytes = std::fs::read(&fixture_wasm).expect("read fixture wasm");
         std::fs::write(&wasm_path, &bytes).expect("write temp wasm");
 

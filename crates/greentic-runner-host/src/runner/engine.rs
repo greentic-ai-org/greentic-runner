@@ -18,6 +18,10 @@ use super::templating::{TemplateOptions, render_template_value};
 use crate::config::{FlowRetryConfig, HostConfig};
 use crate::pack::{FlowDescriptor, PackRuntime};
 use crate::telemetry::{FlowSpanAttributes, annotate_span, backoff_delay_ms, set_flow_context};
+use crate::validate::{
+    ValidationConfig, ValidationIssue, ValidationMode, validate_component_envelope,
+    validate_tool_envelope,
+};
 use greentic_types::{Flow, Node, NodeId, Routing};
 
 pub struct FlowEngine {
@@ -26,6 +30,7 @@ pub struct FlowEngine {
     flow_sources: HashMap<FlowKey, usize>,
     flow_cache: RwLock<HashMap<FlowKey, HostFlow>>,
     default_env: String,
+    validation: ValidationConfig,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -77,6 +82,20 @@ pub struct HostNode {
     operation_in_mapping: Option<String>,
     payload_expr: Value,
     routing: Routing,
+}
+
+impl HostNode {
+    pub fn component_id(&self) -> &str {
+        &self.component_id
+    }
+
+    pub fn operation_name(&self) -> Option<&str> {
+        self.operation_name.as_deref()
+    }
+
+    pub fn operation_in_mapping(&self) -> Option<&str> {
+        self.operation_in_mapping.as_deref()
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -220,6 +239,7 @@ impl FlowEngine {
             flow_sources,
             flow_cache: RwLock::new(flow_map),
             default_env: env::var("GREENTIC_ENV").unwrap_or_else(|_| "local".to_string()),
+            validation: config.validation.clone(),
         })
     }
 
@@ -389,12 +409,21 @@ impl FlowEngine {
             if let Some(observer) = ctx.observer {
                 observer.on_node_start(&event);
             }
+            let dispatch = self
+                .dispatch_node(ctx, node_id.as_str(), node, &mut state, payload, &event)
+                .await;
             let DispatchOutcome {
                 output,
                 wait_reason,
-            } = self
-                .dispatch_node(ctx, node_id.as_str(), node, &mut state, payload)
-                .await?;
+            } = match dispatch {
+                Ok(outcome) => outcome,
+                Err(err) => {
+                    if let Some(observer) = ctx.observer {
+                        observer.on_node_error(&event, err.as_ref());
+                    }
+                    return Err(err);
+                }
+            };
 
             state.nodes.insert(node_id.clone().into(), output.clone());
             state.last_output = Some(output.payload.clone());
@@ -466,6 +495,7 @@ impl FlowEngine {
         node: &HostNode,
         state: &mut ExecutionState,
         payload: Value,
+        event: &NodeEvent<'_>,
     ) -> Result<DispatchOutcome> {
         match &node.kind {
             NodeKind::Exec { target_component } => self
@@ -474,6 +504,7 @@ impl FlowEngine {
                     node_id,
                     node,
                     payload,
+                    event,
                     ComponentOverrides {
                         component: Some(target_component.as_str()),
                         operation: node.operation_name.as_deref(),
@@ -482,7 +513,7 @@ impl FlowEngine {
                 .await
                 .map(DispatchOutcome::complete),
             NodeKind::PackComponent { component_ref } => self
-                .execute_component_call(ctx, node_id, node, payload, component_ref.as_str())
+                .execute_component_call(ctx, node_id, node, payload, component_ref.as_str(), event)
                 .await
                 .map(DispatchOutcome::complete),
             NodeKind::FlowCall => self
@@ -490,7 +521,7 @@ impl FlowEngine {
                 .await
                 .map(DispatchOutcome::complete),
             NodeKind::ProviderInvoke => self
-                .execute_provider_invoke(ctx, node_id, state, payload)
+                .execute_provider_invoke(ctx, node_id, state, payload, event)
                 .await
                 .map(DispatchOutcome::complete),
             NodeKind::BuiltinEmit { kind } => {
@@ -566,6 +597,7 @@ impl FlowEngine {
         node_id: &str,
         node: &HostNode,
         payload: Value,
+        event: &NodeEvent<'_>,
         overrides: ComponentOverrides<'_>,
     ) -> Result<NodeOutput> {
         #[derive(Deserialize)]
@@ -601,7 +633,7 @@ impl FlowEngine {
             config: payload.config,
         };
 
-        self.invoke_component_call(ctx, node_id, call).await
+        self.invoke_component_call(ctx, node_id, call, event).await
     }
 
     async fn execute_component_call(
@@ -611,6 +643,7 @@ impl FlowEngine {
         node: &HostNode,
         payload: Value,
         component_ref: &str,
+        event: &NodeEvent<'_>,
     ) -> Result<NodeOutput> {
         let payload_operation = extract_operation_from_mapping(&payload);
         let (input, config) = split_operation_payload(payload);
@@ -627,7 +660,7 @@ impl FlowEngine {
             input,
             config,
         };
-        self.invoke_component_call(ctx, node_id, call).await
+        self.invoke_component_call(ctx, node_id, call, event).await
     }
 
     async fn invoke_component_call(
@@ -635,7 +668,9 @@ impl FlowEngine {
         ctx: &FlowContext<'_>,
         node_id: &str,
         call: ComponentCall,
+        event: &NodeEvent<'_>,
     ) -> Result<NodeOutput> {
+        self.validate_component(ctx, event, &call)?;
         let input_json = serde_json::to_string(&call.input)?;
         let config_json = if call.config.is_null() {
             None
@@ -671,6 +706,7 @@ impl FlowEngine {
         node_id: &str,
         state: &ExecutionState,
         payload: Value,
+        event: &NodeEvent<'_>,
     ) -> Result<NodeOutput> {
         #[derive(Deserialize)]
         struct ProviderPayload {
@@ -727,6 +763,15 @@ impl FlowEngine {
         };
         let input_json = serde_json::to_vec(&input_value)?;
 
+        self.validate_tool(
+            ctx,
+            event,
+            payload.provider_id.as_deref(),
+            payload.provider_type.as_deref(),
+            &op,
+            &input_value,
+        )?;
+
         let key = FlowKey {
             pack_id: ctx.pack_id.to_string(),
             flow_id: ctx.flow_id.to_string(),
@@ -763,6 +808,99 @@ impl FlowEngine {
         };
         let _ = payload.err_map;
         Ok(NodeOutput::new(output))
+    }
+
+    fn validate_component(
+        &self,
+        ctx: &FlowContext<'_>,
+        event: &NodeEvent<'_>,
+        call: &ComponentCall,
+    ) -> Result<()> {
+        if self.validation.mode == ValidationMode::Off {
+            return Ok(());
+        }
+        let mut metadata = JsonMap::new();
+        metadata.insert("tenant_id".to_string(), json!(ctx.tenant));
+        if let Some(id) = ctx.session_id {
+            metadata.insert("session".to_string(), json!({ "id": id }));
+        }
+        let envelope = json!({
+            "component_id": call.component_ref,
+            "operation": call.operation,
+            "input": call.input,
+            "config": call.config,
+            "metadata": Value::Object(metadata),
+        });
+        let issues = validate_component_envelope(&envelope);
+        self.report_validation(ctx, event, "component", issues)
+    }
+
+    fn validate_tool(
+        &self,
+        ctx: &FlowContext<'_>,
+        event: &NodeEvent<'_>,
+        provider_id: Option<&str>,
+        provider_type: Option<&str>,
+        operation: &str,
+        input: &Value,
+    ) -> Result<()> {
+        if self.validation.mode == ValidationMode::Off {
+            return Ok(());
+        }
+        let tool_id = provider_id.or(provider_type).unwrap_or("provider.invoke");
+        let mut metadata = JsonMap::new();
+        metadata.insert("tenant_id".to_string(), json!(ctx.tenant));
+        if let Some(id) = ctx.session_id {
+            metadata.insert("session".to_string(), json!({ "id": id }));
+        }
+        let envelope = json!({
+            "tool_id": tool_id,
+            "operation": operation,
+            "input": input,
+            "metadata": Value::Object(metadata),
+        });
+        let issues = validate_tool_envelope(&envelope);
+        self.report_validation(ctx, event, "tool", issues)
+    }
+
+    fn report_validation(
+        &self,
+        ctx: &FlowContext<'_>,
+        event: &NodeEvent<'_>,
+        kind: &str,
+        issues: Vec<ValidationIssue>,
+    ) -> Result<()> {
+        if issues.is_empty() {
+            return Ok(());
+        }
+        if let Some(observer) = ctx.observer {
+            observer.on_validation(event, &issues);
+        }
+        match self.validation.mode {
+            ValidationMode::Warn => {
+                tracing::warn!(
+                    tenant = ctx.tenant,
+                    flow_id = ctx.flow_id,
+                    node_id = event.node_id,
+                    kind,
+                    issues = ?issues,
+                    "invocation envelope validation issues"
+                );
+                Ok(())
+            }
+            ValidationMode::Error => {
+                tracing::error!(
+                    tenant = ctx.tenant,
+                    flow_id = ctx.flow_id,
+                    node_id = event.node_id,
+                    kind,
+                    issues = ?issues,
+                    "invocation envelope validation failed"
+                );
+                bail!("invocation_validation_failed");
+            }
+            ValidationMode::Off => Ok(()),
+        }
     }
 
     pub fn flows(&self) -> &[FlowDescriptor] {
@@ -804,6 +942,7 @@ pub trait ExecutionObserver: Send + Sync {
     fn on_node_start(&self, event: &NodeEvent<'_>);
     fn on_node_end(&self, event: &NodeEvent<'_>, output: &Value);
     fn on_node_error(&self, event: &NodeEvent<'_>, error: &dyn StdError);
+    fn on_validation(&self, _event: &NodeEvent<'_>, _issues: &[ValidationIssue]) {}
 }
 
 pub struct NodeEvent<'a> {
@@ -1193,6 +1332,7 @@ fn emit_ref_from_kind(kind: &EmitKind) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::validate::{ValidationConfig, ValidationMode};
     use greentic_types::{
         Flow, FlowComponentRef, FlowId, FlowKind, InputMapping, Node, NodeId, OutputMapping,
         Routing, TelemetryHints,
@@ -1210,6 +1350,9 @@ mod tests {
             flow_sources: HashMap::new(),
             flow_cache: RwLock::new(HashMap::new()),
             default_env: "local".to_string(),
+            validation: ValidationConfig {
+                mode: ValidationMode::Off,
+            },
         }
     }
 
@@ -1294,12 +1437,19 @@ mod tests {
         };
         let _state = ExecutionState::new(Value::Null);
         let payload = json!({ "component": "qa.process" });
+        let event = NodeEvent {
+            context: &ctx,
+            node_id: "missing-op",
+            node: &node,
+            payload: &payload,
+        };
         let err = rt
             .block_on(engine.execute_component_exec(
                 &ctx,
                 "missing-op",
                 &node,
-                payload,
+                payload.clone(),
+                &event,
                 ComponentOverrides {
                     component: None,
                     operation: None,
@@ -1351,12 +1501,19 @@ mod tests {
         };
         let _state = ExecutionState::new(Value::Null);
         let payload = json!({ "component": "qa.process" });
+        let event = NodeEvent {
+            context: &ctx,
+            node_id: "missing-op-hint",
+            node: &node,
+            payload: &payload,
+        };
         let err = rt
             .block_on(engine.execute_component_exec(
                 &ctx,
                 "missing-op-hint",
                 &node,
-                payload,
+                payload.clone(),
+                &event,
                 ComponentOverrides {
                     component: None,
                     operation: None,
@@ -1446,6 +1603,9 @@ mod tests {
                 host_flow,
             )])),
             default_env: "local".to_string(),
+            validation: ValidationConfig {
+                mode: ValidationMode::Off,
+            },
         };
         let observer = CountingObserver::new();
         let ctx = FlowContext {

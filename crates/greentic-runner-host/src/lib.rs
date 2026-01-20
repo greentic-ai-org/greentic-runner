@@ -31,6 +31,7 @@ pub mod cache;
 pub mod component_api;
 pub mod config;
 pub mod engine;
+pub mod fault;
 pub mod gtbind;
 pub mod http;
 pub mod ingress;
@@ -45,6 +46,8 @@ pub mod runtime_wasmtime;
 pub mod secrets;
 pub mod storage;
 pub mod telemetry;
+pub mod trace;
+pub mod validate;
 pub mod verify;
 pub mod wasi;
 pub mod watcher;
@@ -80,6 +83,8 @@ pub struct RunnerConfig {
     pub secrets_backend: SecretsBackend,
     pub wasi_policy: RunnerWasiPolicy,
     pub resolved_config: ResolvedConfig,
+    pub trace: trace::TraceConfig,
+    pub validation: validate::ValidationConfig,
 }
 
 impl RunnerConfig {
@@ -139,6 +144,8 @@ impl RunnerConfig {
             secrets_backend,
             wasi_policy,
             resolved_config,
+            trace: trace::TraceConfig::from_env(),
+            validation: validate::ValidationConfig::from_env(),
         })
     }
 
@@ -339,13 +346,17 @@ pub async fn run(cfg: RunnerConfig) -> Result<()> {
         secrets_backend,
         wasi_policy,
         resolved_config: _resolved_config,
+        trace,
+        validation,
     } = cfg;
     #[cfg(not(feature = "telemetry"))]
     let _ = telemetry;
 
     let mut builder = HostBuilder::new();
     for bindings in tenant_bindings.into_values() {
-        let host_config = HostConfig::from_gtbind(bindings);
+        let mut host_config = HostConfig::from_gtbind(bindings);
+        host_config.trace = trace.clone();
+        host_config.validation = validation.clone();
         builder = builder.with_config(host_config);
     }
     #[cfg(feature = "telemetry")]

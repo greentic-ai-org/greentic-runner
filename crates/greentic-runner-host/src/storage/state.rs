@@ -9,6 +9,7 @@ use serde_json::Value;
 
 use crate::engine::error::{GResult, RunnerError};
 use crate::engine::host::{SessionKey, StateHost};
+use crate::fault::wrap_state_store;
 
 pub type DynStateStore = Arc<dyn StateStore>;
 
@@ -25,7 +26,8 @@ impl StateStoreHost {
 }
 
 pub fn new_state_store() -> DynStateStore {
-    Arc::new(InMemoryStateStore::new())
+    let store: DynStateStore = Arc::new(InMemoryStateStore::new());
+    wrap_state_store(store)
 }
 
 pub fn state_host_from(store: DynStateStore) -> Arc<dyn StateHost> {

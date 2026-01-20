@@ -2,6 +2,8 @@ use crate::gtbind::PackBinding;
 use crate::gtbind::TenantBindings;
 use crate::oauth::OAuthBrokerConfig;
 use crate::runner::mocks::MocksConfig;
+use crate::trace::TraceConfig;
+use crate::validate::ValidationConfig;
 use anyhow::{Context, Result};
 use serde::Deserialize;
 use serde_yaml_bw as serde_yaml;
@@ -26,6 +28,8 @@ pub struct HostConfig {
     pub mocks: Option<MocksConfig>,
     pub pack_bindings: Vec<PackBinding>,
     pub env_passthrough: Vec<String>,
+    pub trace: TraceConfig,
+    pub validation: ValidationConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -156,6 +160,8 @@ impl HostConfig {
             mocks: bindings.mocks.clone(),
             pack_bindings: Vec::new(),
             env_passthrough: Vec::new(),
+            trace: TraceConfig::from_env(),
+            validation: ValidationConfig::from_env(),
         })
     }
 
@@ -175,6 +181,8 @@ impl HostConfig {
             mocks: None,
             pack_bindings: bindings.packs,
             env_passthrough: bindings.env_passthrough,
+            trace: TraceConfig::from_env(),
+            validation: ValidationConfig::from_env(),
         }
     }
 
@@ -341,6 +349,8 @@ mod tests {
             mocks: None,
             pack_bindings: Vec::new(),
             env_passthrough: Vec::new(),
+            trace: TraceConfig::from_env(),
+            validation: ValidationConfig::from_env(),
         }
     }
 

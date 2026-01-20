@@ -22,6 +22,7 @@ use crate::runner::mocks::MockLayer;
 use crate::secrets::{DynSecretsManager, read_secret_blocking};
 use crate::storage::session::DynSessionStore;
 use crate::storage::state::DynStateStore;
+use crate::trace::PackTraceInfo;
 use crate::wasi::RunnerWasiPolicy;
 use greentic_types::SecretRequirement;
 
@@ -159,6 +160,23 @@ impl TenantRuntime {
             .iter()
             .map(|(_, digest)| digest.clone())
             .collect::<Vec<_>>();
+        let mut pack_trace = HashMap::new();
+        for (pack, digest) in &packs {
+            let pack_id = pack.metadata().pack_id.clone();
+            let pack_ref = config
+                .pack_bindings
+                .iter()
+                .find(|binding| binding.pack_id == pack_id)
+                .map(|binding| binding.pack_ref.clone())
+                .unwrap_or_else(|| pack_id.clone());
+            pack_trace.insert(
+                pack_id,
+                PackTraceInfo {
+                    pack_ref,
+                    resolved_digest: digest.clone(),
+                },
+            );
+        }
         let engine = Arc::new(
             FlowEngine::new(pack_runtimes.clone(), Arc::clone(&config))
                 .await
@@ -168,6 +186,7 @@ impl TenantRuntime {
             StateMachineRuntime::from_flow_engine(
                 Arc::clone(&config),
                 Arc::clone(&engine),
+                pack_trace,
                 session_host,
                 session_store,
                 state_host,

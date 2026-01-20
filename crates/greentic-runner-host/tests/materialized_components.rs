@@ -11,6 +11,8 @@ use greentic_runner_host::config::{
 };
 use greentic_runner_host::pack::{ComponentResolution, PackRuntime};
 use greentic_runner_host::secrets::default_manager;
+use greentic_runner_host::trace::TraceConfig;
+use greentic_runner_host::validate::ValidationConfig;
 use greentic_runner_host::wasi::RunnerWasiPolicy;
 use greentic_types::decode_pack_manifest;
 use serde::Deserialize;
@@ -46,6 +48,8 @@ fn host_config(bindings_path: &Path) -> HostConfig {
         mocks: None,
         pack_bindings: Vec::new(),
         env_passthrough: Vec::new(),
+        trace: TraceConfig::from_env(),
+        validation: ValidationConfig::from_env(),
     }
 }
 

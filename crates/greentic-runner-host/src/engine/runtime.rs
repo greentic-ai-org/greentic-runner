@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -29,6 +30,7 @@ use crate::runner::engine::{FlowContext, FlowEngine, FlowSnapshot, FlowStatus, F
 use crate::runner::mocks::MockLayer;
 use crate::secrets::{DynSecretsManager, scoped_secret_path};
 use crate::storage::session::DynSessionStore;
+use crate::trace::{PackTraceInfo, TraceContext, TraceMode, TraceRecorder};
 
 const DEFAULT_ENV: &str = "local";
 const PACK_FLOW_ADAPTER: &str = "pack_flow";
@@ -358,9 +360,11 @@ impl StateMachineRuntime {
     }
 
     /// Build a state-machine runtime that proxies pack flows through the legacy FlowEngine.
+    #[allow(clippy::too_many_arguments)]
     pub fn from_flow_engine(
         config: Arc<HostConfig>,
         engine: Arc<FlowEngine>,
+        pack_trace: HashMap<String, PackTraceInfo>,
         session_host: Arc<dyn SessionHost>,
         session_store: DynSessionStore,
         state_host: Arc<dyn StateHost>,
@@ -383,6 +387,7 @@ impl StateMachineRuntime {
             Box::new(PackFlowAdapter::new(
                 Arc::clone(&config),
                 Arc::clone(&engine),
+                pack_trace,
                 resume_store,
                 mocks,
             )),
@@ -504,6 +509,7 @@ struct PackFlowAdapter {
     tenant: String,
     config: Arc<HostConfig>,
     engine: Arc<FlowEngine>,
+    pack_trace: HashMap<String, PackTraceInfo>,
     resume: FlowResumeStore,
     mocks: Option<Arc<MockLayer>>,
 }
@@ -512,6 +518,7 @@ impl PackFlowAdapter {
     fn new(
         config: Arc<HostConfig>,
         engine: Arc<FlowEngine>,
+        pack_trace: HashMap<String, PackTraceInfo>,
         resume: FlowResumeStore,
         mocks: Option<Arc<MockLayer>>,
     ) -> Self {
@@ -519,6 +526,7 @@ impl PackFlowAdapter {
             tenant: config.tenant.clone(),
             config,
             engine,
+            pack_trace,
             resume,
             mocks,
         }
@@ -561,6 +569,32 @@ impl Adapter for PackFlowAdapter {
             });
         };
 
+        let trace_config = self.config.trace.clone();
+        let flow_version = self
+            .engine
+            .flow_by_key(pack_id, &flow_id)
+            .map(|desc| desc.version.clone())
+            .unwrap_or_else(|| "unknown".to_string());
+        let pack_trace = self
+            .pack_trace
+            .get(pack_id)
+            .cloned()
+            .unwrap_or_else(|| PackTraceInfo {
+                pack_ref: pack_id.to_string(),
+                resolved_digest: None,
+            });
+        let trace_ctx = TraceContext {
+            pack_ref: pack_trace.pack_ref,
+            resolved_digest: pack_trace.resolved_digest,
+            flow_id: flow_id.clone(),
+            flow_version,
+        };
+        let trace = if trace_config.mode == TraceMode::Off {
+            None
+        } else {
+            Some(TraceRecorder::new(trace_config, trace_ctx))
+        };
+
         let mocks = self.mocks.as_deref();
         let ctx = FlowContext {
             tenant: &self.tenant,
@@ -572,7 +606,9 @@ impl Adapter for PackFlowAdapter {
             session_id: Some(session_owned.as_str()),
             provider_id: provider_owned.as_deref(),
             retry_config,
-            observer: None,
+            observer: trace
+                .as_ref()
+                .map(|recorder| recorder as &dyn crate::runner::engine::ExecutionObserver),
             mocks,
         };
 
@@ -585,10 +621,27 @@ impl Adapter for PackFlowAdapter {
             self.engine.resume(resume_ctx, snapshot, payload).await
         } else {
             self.engine.execute(ctx, payload).await
-        }
-        .map_err(|err| RunnerError::AdapterCall {
-            reason: err.to_string(),
-        })?;
+        };
+        let execution = match execution {
+            Ok(execution) => {
+                if let Some(recorder) = trace.as_ref()
+                    && let Err(err) = recorder.flush_success()
+                {
+                    tracing::warn!(error = %err, "failed to write trace");
+                }
+                execution
+            }
+            Err(err) => {
+                if let Some(recorder) = trace.as_ref()
+                    && let Err(write_err) = recorder.flush_error(err.as_ref())
+                {
+                    tracing::warn!(error = %write_err, "failed to write trace");
+                }
+                return Err(RunnerError::AdapterCall {
+                    reason: err.to_string(),
+                });
+            }
+        };
 
         match execution.status {
             FlowStatus::Completed => {

@@ -1,8 +1,11 @@
 use clap::{Parser, Subcommand, ValueEnum};
+mod cli;
 use greentic_config::{ConfigFileFormat, ConfigLayer, ConfigResolver};
 use greentic_runner_host::cache::{
     ArtifactKey, CacheConfig, CacheManager, CpuPolicy, EngineProfile,
 };
+use greentic_runner_host::trace::{TraceConfig, TraceMode};
+use greentic_runner_host::validate::{ValidationConfig, ValidationMode};
 use greentic_runner_host::{RunnerConfig, run as run_host};
 use greentic_types::ComponentSourceRef;
 use std::path::{Path, PathBuf};
@@ -27,6 +30,7 @@ struct Cli {
 enum Command {
     #[command(subcommand)]
     Cache(CacheCommand),
+    Replay(cli::replay::ReplayArgs),
 }
 
 #[derive(Debug, Subcommand)]
@@ -93,6 +97,42 @@ struct RunArgs {
     /// Emit JSON errors on failure
     #[arg(long)]
     json: bool,
+
+    /// Trace output path (default: trace.json)
+    #[arg(long = "trace-out", value_name = "PATH")]
+    trace_out: Option<PathBuf>,
+
+    /// Trace emission mode
+    #[arg(long = "trace", value_enum, default_value = "on")]
+    trace: TraceArg,
+
+    /// Capture invocation inputs into trace.json (default off)
+    #[arg(long = "trace-capture-inputs", value_enum, default_value = "off")]
+    trace_capture_inputs: TraceCaptureArg,
+
+    /// Invocation envelope validation mode
+    #[arg(long = "validation", value_enum)]
+    validation: Option<ValidationArg>,
+}
+
+#[derive(Copy, Clone, Debug, ValueEnum)]
+enum TraceArg {
+    Off,
+    On,
+    Always,
+}
+
+#[derive(Copy, Clone, Debug, ValueEnum)]
+enum TraceCaptureArg {
+    Off,
+    On,
+}
+
+#[derive(Copy, Clone, Debug, ValueEnum)]
+enum ValidationArg {
+    Off,
+    Warn,
+    Error,
 }
 
 #[greentic_types::telemetry::main(service_name = "greentic-runner")]
@@ -114,6 +154,7 @@ async fn run_with_cli(cli: Cli) -> anyhow::Result<()> {
     if let Some(command) = cli.command {
         return match command {
             Command::Cache(cmd) => run_cache(cmd).await,
+            Command::Replay(args) => cli::replay::run(args).await,
         };
     }
     let run = cli.run;
@@ -136,7 +177,28 @@ async fn run_with_cli(cli: Cli) -> anyhow::Result<()> {
     }
     let bindings =
         greentic_runner_host::gtbind::collect_gtbind_paths(&run.bindings, &run.bindings_dir)?;
-    let cfg = RunnerConfig::from_config(resolved, bindings)?.with_port(run.port);
+    let trace_out = std::env::var_os("GREENTIC_TRACE_OUT").map(PathBuf::from);
+    let trace_config = TraceConfig::from_env()
+        .with_overrides(
+            match run.trace {
+                TraceArg::Off => TraceMode::Off,
+                TraceArg::On => TraceMode::On,
+                TraceArg::Always => TraceMode::Always,
+            },
+            trace_out.or(run.trace_out.clone()),
+        )
+        .with_capture_inputs(matches!(run.trace_capture_inputs, TraceCaptureArg::On));
+    let validation_mode = run.validation.map(|value| match value {
+        ValidationArg::Off => ValidationMode::Off,
+        ValidationArg::Warn => ValidationMode::Warn,
+        ValidationArg::Error => ValidationMode::Error,
+    });
+    let validation_config = validation_mode
+        .map(|mode| ValidationConfig::from_env().with_mode(mode))
+        .unwrap_or_else(ValidationConfig::from_env);
+    let mut cfg = RunnerConfig::from_config(resolved, bindings)?.with_port(run.port);
+    cfg.trace = trace_config;
+    cfg.validation = validation_config;
     run_host(cfg).await
 }
 

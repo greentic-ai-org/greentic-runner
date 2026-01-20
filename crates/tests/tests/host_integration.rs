@@ -85,6 +85,87 @@ async fn host_executes_demo_pack_flow() -> Result<()> {
 
 #[tokio::test]
 #[serial]
+async fn trace_written_on_failure() -> Result<()> {
+    let temp = TempDir::new()?;
+    let trace_path = temp.path().join("trace.json");
+    let _trace_guard = EnvGuard::set("GREENTIC_TRACE_OUT", trace_path.display().to_string());
+    let _backend_guard = EnvGuard::set("SECRETS_BACKEND", "env");
+
+    let bindings = fixture_path("examples/bindings/default.bindings.yaml");
+    let config = HostConfig::load_from_path(&bindings)?;
+    let host = HostBuilder::new().with_config(config).build()?;
+    host.start().await?;
+
+    let pack_path = temp.path().join("runner-components-fail.gtpack");
+    build_failing_runner_components_pack(&pack_path)?;
+    host.load_pack("acme", pack_path.as_path()).await?;
+
+    let activity = Activity::text("hello from integration")
+        .with_tenant("acme")
+        .from_user("user-1");
+    let result = host.handle_activity("acme", activity).await;
+    assert!(result.is_err(), "expected flow to fail");
+
+    assert!(
+        trace_path.exists(),
+        "trace.json should be written on failure"
+    );
+    let bytes = fs::read(&trace_path).context("read trace.json")?;
+    let trace: serde_json::Value = serde_json::from_slice(&bytes)?;
+    assert_eq!(trace["trace_version"], 1);
+    assert_eq!(trace["flow"]["id"], "demo.flow");
+    assert!(
+        trace["steps"]
+            .as_array()
+            .map(|steps| !steps.is_empty())
+            .unwrap_or(false),
+        "trace steps should include the failing node"
+    );
+
+    host.stop().await?;
+    Ok(())
+}
+
+#[tokio::test]
+#[serial]
+async fn fault_injection_drops_state_write() -> Result<()> {
+    let temp = TempDir::new()?;
+    let trace_path = temp.path().join("trace.json");
+    let _trace_guard = EnvGuard::set("GREENTIC_TRACE_OUT", trace_path.display().to_string());
+    let _drop_guard = EnvGuard::set("GREENTIC_FAIL_DROP_STATE_WRITE", "1");
+    let _seed_guard = EnvGuard::set("GREENTIC_FAIL_SEED", "1234");
+    let _backend_guard = EnvGuard::set("SECRETS_BACKEND", "env");
+
+    let bindings = fixture_path("examples/bindings/default.bindings.yaml");
+    let config = HostConfig::load_from_path(&bindings)?;
+    let host = HostBuilder::new().with_config(config).build()?;
+    host.start().await?;
+
+    let pack_path = temp.path().join("state-store-fault.gtpack");
+    build_state_store_fault_pack(&pack_path)?;
+    host.load_pack("acme", pack_path.as_path()).await?;
+
+    let activity = Activity::text("hello from integration")
+        .with_tenant("acme")
+        .from_user("user-1");
+    let result = host.handle_activity("acme", activity).await;
+    assert!(result.is_err(), "expected state store read to fail");
+
+    let bytes = fs::read(&trace_path).context("read trace.json")?;
+    let trace: serde_json::Value = serde_json::from_slice(&bytes)?;
+    let last = trace["steps"]
+        .as_array()
+        .and_then(|steps| steps.last())
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(last["node_id"], "read");
+
+    host.stop().await?;
+    Ok(())
+}
+
+#[tokio::test]
+#[serial]
 async fn pack_watcher_resolves_index_and_reloads() -> Result<()> {
     let cache_dir = TempDir::new()?;
     let _backend_guard = EnvGuard::set("SECRETS_BACKEND", "env");
@@ -282,6 +363,165 @@ fn build_runner_components_pack(pack_path: &std::path::Path) -> Result<()> {
         io::copy(&mut file, &mut writer)?;
     }
     writer.finish().context("finalise integration test pack")?;
+    Ok(())
+}
+
+fn build_failing_runner_components_pack(pack_path: &std::path::Path) -> Result<()> {
+    let flow_yaml = r#"
+id: demo.flow
+type: messaging
+start: qa
+nodes:
+  qa:
+    component.exec:
+      component: qa.process
+      operation: missing-op
+      input:
+        text: "hello"
+    routing:
+      - out: true
+"#;
+    let (_bundle, flow) = load_and_validate_bundle_with_flow(flow_yaml, None)?;
+
+    let manifest = PackManifest {
+        schema_version: "1.0".into(),
+        pack_id: "runner.components.test".parse()?,
+        version: Version::parse("0.0.0")?,
+        kind: PackKind::Application,
+        publisher: "test".into(),
+        components: vec![ComponentManifest {
+            id: "qa.process".parse()?,
+            version: Version::parse("0.1.0")?,
+            supports: vec![FlowKind::Messaging],
+            world: "greentic:component@0.4.0".into(),
+            profiles: ComponentProfiles::default(),
+            capabilities: ComponentCapabilities::default(),
+            configurators: None,
+            operations: Vec::new(),
+            config_schema: None,
+            resources: ResourceHints::default(),
+            dev_flows: BTreeMap::new(),
+        }],
+        flows: vec![PackFlowEntry {
+            id: flow.id.clone(),
+            kind: flow.kind,
+            flow: flow.clone(),
+            tags: Vec::new(),
+            entrypoints: vec!["default".into()],
+        }],
+        dependencies: Vec::new(),
+        capabilities: Vec::new(),
+        signatures: Default::default(),
+        secret_requirements: Vec::new(),
+        bootstrap: None,
+        extensions: None,
+    };
+
+    let mut writer =
+        ZipWriter::new(std::fs::File::create(pack_path).context("create failing pack archive")?);
+    let options: FileOptions<'_, ()> =
+        FileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    let manifest_bytes = encode_pack_manifest(&manifest)?;
+    writer.start_file("manifest.cbor", options)?;
+    writer.write_all(&manifest_bytes)?;
+
+    let components = fixture_components(&fixture_path("tests/fixtures/packs/runner-components"))?;
+    for (id, artifact) in components {
+        if id != "qa.process" {
+            continue;
+        }
+        writer.start_file(format!("components/{id}.wasm"), options)?;
+        let mut file = std::fs::File::open(&artifact as &Path)
+            .with_context(|| format!("open component {}", artifact.display()))?;
+        io::copy(&mut file, &mut writer)?;
+    }
+    writer.finish().context("finalise failing pack")?;
+    Ok(())
+}
+
+fn build_state_store_fault_pack(pack_path: &std::path::Path) -> Result<()> {
+    let flow_yaml = r#"
+id: demo.flow
+type: messaging
+start: write
+nodes:
+  write:
+    component.exec:
+      component: state.store
+      operation: write
+      input:
+        key: "fault-key"
+        value:
+          status: "ok"
+    routing:
+      - to: read
+  read:
+    component.exec:
+      component: state.store
+      operation: read
+      input:
+        key: "fault-key"
+    routing:
+      - to: emit
+  emit:
+    emit.response:
+      text: "done"
+    routing:
+      - out: true
+"#;
+    let (_bundle, flow) = load_and_validate_bundle_with_flow(flow_yaml, None)?;
+
+    let manifest = PackManifest {
+        schema_version: "1.0".into(),
+        pack_id: "runner.state-store.fault".parse()?,
+        version: Version::parse("0.0.0")?,
+        kind: PackKind::Application,
+        publisher: "test".into(),
+        components: vec![ComponentManifest {
+            id: "state.store".parse()?,
+            version: Version::parse("0.1.0")?,
+            supports: vec![FlowKind::Messaging],
+            world: "greentic:component@0.4.0".into(),
+            profiles: ComponentProfiles::default(),
+            capabilities: ComponentCapabilities::default(),
+            configurators: None,
+            operations: Vec::new(),
+            config_schema: None,
+            resources: ResourceHints::default(),
+            dev_flows: BTreeMap::new(),
+        }],
+        flows: vec![PackFlowEntry {
+            id: flow.id.clone(),
+            kind: flow.kind,
+            flow: flow.clone(),
+            tags: Vec::new(),
+            entrypoints: vec!["default".into()],
+        }],
+        dependencies: Vec::new(),
+        capabilities: Vec::new(),
+        signatures: Default::default(),
+        secret_requirements: Vec::new(),
+        bootstrap: None,
+        extensions: None,
+    };
+
+    let mut writer =
+        ZipWriter::new(std::fs::File::create(pack_path).context("create state fault pack")?);
+    let options: FileOptions<'_, ()> =
+        FileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    let manifest_bytes = encode_pack_manifest(&manifest)?;
+    writer.start_file("manifest.cbor", options)?;
+    writer.write_all(&manifest_bytes)?;
+
+    let wasm_path = fixture_path(
+        "tests/fixtures/runner-components/target-test/wasm32-wasip2/release/state_store_component.wasm",
+    );
+    writer.start_file("components/state.store.wasm", options)?;
+    let mut file = std::fs::File::open(&wasm_path as &Path)
+        .with_context(|| format!("open component {}", wasm_path.display()))?;
+    io::copy(&mut file, &mut writer)?;
+
+    writer.finish().context("finalise state fault pack")?;
     Ok(())
 }
 

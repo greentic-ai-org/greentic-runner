@@ -12,6 +12,8 @@ pub use greentic_runner_host::runner::mocks::{
 use greentic_runner_host::runner::mocks::{MockEventSink, MockLayer};
 use greentic_runner_host::secrets::default_manager;
 use greentic_runner_host::storage::{new_session_store, new_state_store};
+use greentic_runner_host::trace::TraceConfig;
+use greentic_runner_host::validate::ValidationConfig;
 use parking_lot::Mutex;
 use runner_core::normalize_under_root;
 use serde::{Deserialize, Serialize};
@@ -517,6 +519,8 @@ fn build_host_config(profile: &ResolvedProfile, dirs: &RunDirectories) -> HostCo
         mocks: None,
         pack_bindings: Vec::new(),
         env_passthrough: Vec::new(),
+        trace: TraceConfig::from_env(),
+        validation: ValidationConfig::from_env(),
     }
 }
 

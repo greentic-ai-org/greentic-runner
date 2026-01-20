@@ -17,6 +17,7 @@ bin = ["greentic-runner", "greentic-runner-cli"]
 [dependencies]
 anyhow.workspace = true
 base64.workspace = true
+blake3.workspace = true
 clap.workspace = true
 greentic-runner-host = { workspace = true }
 greentic-runner-desktop = { workspace = true }

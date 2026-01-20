@@ -68,6 +68,7 @@ use crate::runner::flow_adapter::{FlowIR, flow_doc_to_ir, flow_ir_to_flow};
 use crate::runner::mocks::{HttpDecision, HttpMockRequest, HttpMockResponse, MockLayer};
 
 use crate::config::HostConfig;
+use crate::fault;
 use crate::secrets::{DynSecretsManager, read_secret_blocking};
 use crate::storage::state::STATE_PREFIX;
 use crate::storage::{DynSessionStore, DynStateStore};
@@ -2575,6 +2576,9 @@ async fn load_components_from_sources(
                     DistClient::new(dist_options_from(component_resolution))
                 });
                 let reference = source.source.to_string();
+                fault::maybe_fail_asset(&reference)
+                    .await
+                    .with_context(|| format!("fault injection blocked asset {reference}"))?;
                 let digest = source.digest.as_deref().ok_or_else(|| {
                     anyhow!(
                         "component {} missing expected digest for remote component",

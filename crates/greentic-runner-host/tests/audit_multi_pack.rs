@@ -11,6 +11,8 @@ use greentic_runner_host::pack::PackRuntime;
 use greentic_runner_host::runner::engine::{FlowContext, FlowEngine, FlowStatus};
 use greentic_runner_host::runner::flow_adapter::{FlowIR, NodeIR, RouteIR};
 use greentic_runner_host::storage::{new_state_store, state_host_from};
+use greentic_runner_host::trace::TraceConfig;
+use greentic_runner_host::validate::ValidationConfig;
 use greentic_types::{EnvId, TenantCtx, TenantId};
 use indexmap::IndexMap;
 use serde_json::json;
@@ -31,6 +33,8 @@ fn host_config(tenant: &str) -> HostConfig {
         mocks: None,
         pack_bindings: Vec::new(),
         env_passthrough: Vec::new(),
+        trace: TraceConfig::from_env(),
+        validation: ValidationConfig::from_env(),
     }
 }
 

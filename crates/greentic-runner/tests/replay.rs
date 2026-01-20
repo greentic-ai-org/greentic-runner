@@ -162,34 +162,21 @@ nodes:
 }
 
 fn qa_component_artifact() -> Result<PathBuf> {
-    let crates_root = fixture_path("tests/fixtures/runner-components");
-    let target_root = crates_root.join("target-test");
-    let crate_dir = crates_root.join("qa_process");
-
-    let status = Command::new("cargo")
-        .env("CARGO_NET_OFFLINE", "true")
-        .env("CARGO_TARGET_DIR", &target_root)
-        .current_dir(&crate_dir)
-        .args([
-            "build",
-            "--offline",
-            "--target",
-            "wasm32-wasip2",
-            "--release",
-        ])
-        .status()
-        .with_context(|| format!("failed to build component crate {}", crate_dir.display()))?;
-    if !status.success() {
-        anyhow::bail!("component build failed for qa_process");
-    }
-
-    let base = target_root.join("wasm32-wasip2").join("release");
+    let fixtures_root = fixture_path("tests/fixtures/runner-components");
     let candidates = [
-        base.join("qa_process.wasm"),
-        base.join("deps").join("qa_process.wasm"),
+        fixtures_root
+            .join("target-test")
+            .join("wasm32-wasip2")
+            .join("release")
+            .join("qa_process.wasm"),
+        fixtures_root
+            .join("target")
+            .join("wasm32-wasip2")
+            .join("release")
+            .join("qa_process.wasm"),
     ];
     candidates
         .into_iter()
         .find(|path| path.exists())
-        .ok_or_else(|| anyhow::anyhow!("component artifact not found for qa_process"))
+        .ok_or_else(|| anyhow::anyhow!("prebuilt qa_process.wasm not found in fixtures"))
 }

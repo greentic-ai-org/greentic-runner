@@ -1,0 +1,9 @@
+{
+  "scenario": "retry_once",
+  "payload": {
+    "key": "snapshot-retry",
+    "value": {
+      "status": "ok"
+    }
+  }
+}

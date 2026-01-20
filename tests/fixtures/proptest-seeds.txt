@@ -1,0 +1,4 @@
+# Regression seeds for pack resolution properties
+1
+42
+1337

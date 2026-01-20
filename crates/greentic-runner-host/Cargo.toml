@@ -15,6 +15,7 @@ default = ["verify"]
 telemetry = ["dep:greentic-telemetry"]
 verify = []
 session-redis = ["greentic-session/redis"]
+fault-injection = []
 
 [dependencies]
 async-trait.workspace = true
@@ -78,3 +79,4 @@ serial_test.workspace = true
 tempfile.workspace = true
 once_cell.workspace = true
 semver.workspace = true
+proptest.workspace = true

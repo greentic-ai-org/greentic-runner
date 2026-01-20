@@ -1,0 +1,89 @@
+{
+  "cases": [
+    {
+      "name": "transient_component_once",
+      "pack": "messaging-conformance",
+      "faults": [
+        {
+          "point": "BeforeComponentCall",
+          "mode": "Once",
+          "error_kind": "Transient",
+          "message": "simulated transient"
+        }
+      ],
+      "expect": {
+        "retries": 1,
+        "status": "pass",
+        "dlq": false
+      }
+    },
+    {
+      "name": "permanent_component_always",
+      "pack": "messaging-conformance",
+      "faults": [
+        {
+          "point": "AfterComponentCall",
+          "mode": "Always",
+          "error_kind": "Permanent",
+          "message": "simulated permanent"
+        }
+      ],
+      "expect": {
+        "retries": 0,
+        "status": "fail",
+        "dlq": true
+      }
+    },
+    {
+      "name": "state_write_transient_once",
+      "pack": "messaging-conformance",
+      "faults": [
+        {
+          "point": "StateWrite",
+          "mode": "Once",
+          "error_kind": "Transient",
+          "message": "simulated state write"
+        }
+      ],
+      "expect": {
+        "retries": 1,
+        "status": "pass",
+        "dlq": false
+      }
+    },
+    {
+      "name": "template_render_bad_input",
+      "pack": "messaging-conformance",
+      "faults": [
+        {
+          "point": "TemplateRender",
+          "mode": "Always",
+          "error_kind": "BadInput",
+          "message": "simulated bad input"
+        }
+      ],
+      "expect": {
+        "retries": 0,
+        "status": "fail",
+        "dlq": false
+      }
+    },
+    {
+      "name": "wasm_trap_before_component",
+      "pack": "messaging-conformance",
+      "faults": [
+        {
+          "point": "BeforeComponentCall",
+          "mode": "Always",
+          "error_kind": "Trap",
+          "message": "simulated trap"
+        }
+      ],
+      "expect": {
+        "retries": 0,
+        "status": "fail",
+        "dlq": false
+      }
+    }
+  ]
+}

@@ -49,3 +49,19 @@ jobs:
           LOCAL_CHECK_PACKAGE: ${{ matrix.step == 'package' && '1' || '0' }}
         run: |
           bash ci/local_check.sh
+
+      - name: Upload fault artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fault-artifacts-${{ matrix.step }}
+          path: target/fault-artifacts
+          if-no-files-found: ignore
+
+      - name: Upload snapshot artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: snapshot-artifacts-${{ matrix.step }}
+          path: target/snapshot-artifacts
+          if-no-files-found: ignore

@@ -1,0 +1,6 @@
+{
+  "scenario": "component_execution",
+  "payload": {
+    "text": "hello"
+  }
+}

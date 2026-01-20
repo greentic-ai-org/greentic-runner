@@ -1,0 +1,14 @@
+---
+source: crates/greentic-runner/tests/snapshots.rs
+expression: normalized_actual
+---
+{
+  "diagnostics": [
+    {
+      "code": "component_missing",
+      "message": "component 'missing.component' not found in pack"
+    }
+  ],
+  "error": "component 'missing.component' not found in pack",
+  "status": "error"
+}

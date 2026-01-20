@@ -31,6 +31,7 @@ enum Command {
     #[command(subcommand)]
     Cache(CacheCommand),
     Replay(cli::replay::ReplayArgs),
+    Conformance(cli::conformance::ConformanceArgs),
 }
 
 #[derive(Debug, Subcommand)]
@@ -155,6 +156,7 @@ async fn run_with_cli(cli: Cli) -> anyhow::Result<()> {
         return match command {
             Command::Cache(cmd) => run_cache(cmd).await,
             Command::Replay(args) => cli::replay::run(args).await,
+            Command::Conformance(args) => cli::conformance::run(args).await,
         };
     }
     let run = cli.run;

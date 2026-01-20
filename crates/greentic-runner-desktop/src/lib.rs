@@ -356,6 +356,7 @@ async fn run_pack_async(pack_path: &Path, opts: RunOptions) -> Result<RunResult>
         session_id: Some(session_id_owned.as_str()),
         provider_id: Some(provider_id_owned.as_str()),
         retry_config: host_config.retry_config().into(),
+        attempt: 1,
         observer: Some(recorder_ref),
         mocks: Some(mock_ref),
     };

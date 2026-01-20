@@ -135,6 +135,7 @@ async fn flow_engine_allows_duplicate_flow_ids_across_packs() -> Result<()> {
         session_id: None,
         provider_id: None,
         retry_config,
+        attempt: 1,
         observer: None,
         mocks: None,
     };
@@ -148,6 +149,7 @@ async fn flow_engine_allows_duplicate_flow_ids_across_packs() -> Result<()> {
         session_id: None,
         provider_id: None,
         retry_config,
+        attempt: 1,
         observer: None,
         mocks: None,
     };

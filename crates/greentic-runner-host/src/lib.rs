@@ -46,6 +46,8 @@ pub mod runtime_wasmtime;
 pub mod secrets;
 pub mod storage;
 pub mod telemetry;
+#[cfg(feature = "fault-injection")]
+pub mod testing;
 pub mod trace;
 pub mod validate;
 pub mod verify;

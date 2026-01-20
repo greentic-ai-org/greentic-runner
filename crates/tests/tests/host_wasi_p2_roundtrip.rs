@@ -56,6 +56,7 @@ fn run_component(wasm: &Path, config: Arc<HostConfig>, policy: RunnerWasiPolicy)
     let component = Component::from_file(&engine, wasm)
         .with_context(|| format!("failed to load {}", wasm.display()))?;
     let host_state = HostState::new(
+        "wasi-p2-smoke".to_string(),
         Arc::clone(&config),
         Arc::new(BlockingClient::builder().build()?),
         None,

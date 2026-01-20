@@ -66,6 +66,8 @@ use zip::ZipArchive;
 use crate::runner::engine::{FlowContext, FlowEngine, FlowStatus};
 use crate::runner::flow_adapter::{FlowIR, flow_doc_to_ir, flow_ir_to_flow};
 use crate::runner::mocks::{HttpDecision, HttpMockRequest, HttpMockResponse, MockLayer};
+#[cfg(feature = "fault-injection")]
+use crate::testing::fault_injection::{FaultContext, FaultPoint, maybe_fail};
 
 use crate::config::HostConfig;
 use crate::fault;
@@ -185,6 +187,8 @@ pub struct FlowDescriptor {
 }
 
 pub struct HostState {
+    #[allow(dead_code)]
+    pack_id: String,
     config: Arc<HostConfig>,
     http_client: Arc<BlockingClient>,
     default_env: String,
@@ -202,6 +206,7 @@ impl HostState {
     #[allow(clippy::default_constructed_unit_structs)]
     #[allow(clippy::too_many_arguments)]
     pub fn new(
+        pack_id: String,
         config: Arc<HostConfig>,
         http_client: Arc<BlockingClient>,
         mocks: Option<Arc<MockLayer>>,
@@ -213,6 +218,7 @@ impl HostState {
     ) -> Result<Self> {
         let default_env = std::env::var("GREENTIC_ENV").unwrap_or_else(|_| "local".to_string());
         Ok(Self {
+            pack_id,
             config,
             http_client,
             default_env,
@@ -536,6 +542,27 @@ impl StateStoreHost for HostState {
                 });
             }
         };
+        #[cfg(feature = "fault-injection")]
+        {
+            let exec_ctx = self.exec_ctx.as_ref();
+            let flow_id = exec_ctx
+                .map(|ctx| ctx.flow_id.as_str())
+                .unwrap_or("unknown");
+            let node_id = exec_ctx.and_then(|ctx| ctx.node_id.as_deref());
+            let attempt = exec_ctx.map(|ctx| ctx.tenant.attempt).unwrap_or(1);
+            let fault_ctx = FaultContext {
+                pack_id: self.pack_id.as_str(),
+                flow_id,
+                node_id,
+                attempt,
+            };
+            if let Err(err) = maybe_fail(FaultPoint::StateRead, fault_ctx) {
+                return Err(StateError {
+                    code: "internal".into(),
+                    message: err.to_string(),
+                });
+            }
+        }
         let key = StoreStateKey::from(key);
         match store.get_json(&tenant_ctx, STATE_PREFIX, &key, None) {
             Ok(Some(value)) => Ok(serde_json::to_vec(&value).unwrap_or_else(|_| Vec::new())),
@@ -574,6 +601,27 @@ impl StateStoreHost for HostState {
                 });
             }
         };
+        #[cfg(feature = "fault-injection")]
+        {
+            let exec_ctx = self.exec_ctx.as_ref();
+            let flow_id = exec_ctx
+                .map(|ctx| ctx.flow_id.as_str())
+                .unwrap_or("unknown");
+            let node_id = exec_ctx.and_then(|ctx| ctx.node_id.as_deref());
+            let attempt = exec_ctx.map(|ctx| ctx.tenant.attempt).unwrap_or(1);
+            let fault_ctx = FaultContext {
+                pack_id: self.pack_id.as_str(),
+                flow_id,
+                node_id,
+                attempt,
+            };
+            if let Err(err) = maybe_fail(FaultPoint::StateWrite, fault_ctx) {
+                return Err(StateError {
+                    code: "internal".into(),
+                    message: err.to_string(),
+                });
+            }
+        }
         let key = StoreStateKey::from(key);
         let value = serde_json::from_slice(&bytes)
             .unwrap_or_else(|_| Value::String(String::from_utf8_lossy(&bytes).to_string()));
@@ -1109,6 +1157,17 @@ impl PackRuntime {
                 }
             }
         }
+        #[cfg(feature = "fault-injection")]
+        {
+            let fault_ctx = FaultContext {
+                pack_id: metadata.pack_id.as_str(),
+                flow_id: "unknown",
+                node_id: None,
+                attempt: 1,
+            };
+            maybe_fail(FaultPoint::PackResolve, fault_ctx)
+                .map_err(|err| anyhow!(err.to_string()))?;
+        }
         let mut pack_lock = None;
         for root in find_pack_lock_roots(&safe_path, is_dir, archive_hint) {
             pack_lock = load_pack_lock(&root)?;
@@ -1332,6 +1391,7 @@ impl PackRuntime {
             session_id: None,
             provider_id: None,
             retry_config,
+            attempt: 1,
             observer: None,
             mocks,
         };
@@ -1367,6 +1427,7 @@ impl PackRuntime {
         add_component_control_to_linker(&mut linker)?;
 
         let host_state = HostState::new(
+            self.metadata().pack_id.clone(),
             Arc::clone(&self.config),
             Arc::clone(&self.http_client),
             self.mocks.clone(),
@@ -1468,6 +1529,7 @@ impl PackRuntime {
         let pre: ProviderComponentPre<ComponentState> = ProviderComponentPre::new(pre_instance)?;
 
         let host_state = HostState::new(
+            self.metadata().pack_id.clone(),
             Arc::clone(&self.config),
             Arc::clone(&self.http_client),
             self.mocks.clone(),
@@ -2477,6 +2539,399 @@ mod pack_lock_tests {
             err.to_string().contains("bundled digest mismatch"),
             "unexpected error: {err}"
         );
+    }
+}
+
+#[cfg(test)]
+mod pack_resolution_prop_tests {
+    use super::*;
+    use greentic_types::{ArtifactLocationV1, ComponentSourceEntryV1, ResolvedComponentV1};
+    use proptest::prelude::*;
+    use proptest::test_runner::{Config as ProptestConfig, RngAlgorithm, TestRng, TestRunner};
+    use std::collections::BTreeSet;
+    use std::path::Path;
+    use std::str::FromStr;
+
+    #[derive(Clone, Debug)]
+    enum ResolveRequest {
+        ById(String),
+        ByName(String),
+    }
+
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    struct ResolvedComponent {
+        key: String,
+        source: String,
+        artifact: String,
+        digest: Option<String>,
+        expected_wasm_sha256: Option<String>,
+        skip_digest_verification: bool,
+    }
+
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    struct ResolveError {
+        code: String,
+        message: String,
+        context_key: String,
+    }
+
+    #[derive(Clone, Debug)]
+    struct Scenario {
+        pack_lock: Option<PackLockV1>,
+        component_sources: Option<ComponentSourcesV1>,
+        request: ResolveRequest,
+        expected_sha256: Option<String>,
+        bytes: Vec<u8>,
+    }
+
+    fn resolve_component_test(
+        sources: Option<&ComponentSourcesV1>,
+        lock: Option<&PackLockV1>,
+        request: &ResolveRequest,
+    ) -> Result<ResolvedComponent, ResolveError> {
+        let table = if let Some(lock) = lock {
+            component_sources_table_from_pack_lock(lock, false).map_err(|err| ResolveError {
+                code: classify_pack_lock_error(err.to_string().as_str()).to_string(),
+                message: err.to_string(),
+                context_key: request_key(request).to_string(),
+            })?
+        } else {
+            let sources = component_sources_table(sources).map_err(|err| ResolveError {
+                code: "component_sources_error".to_string(),
+                message: err.to_string(),
+                context_key: request_key(request).to_string(),
+            })?;
+            sources.ok_or_else(|| ResolveError {
+                code: "missing_component_sources".to_string(),
+                message: "component sources not provided".to_string(),
+                context_key: request_key(request).to_string(),
+            })?
+        };
+
+        let key = request_key(request);
+        let source = table.get(key).ok_or_else(|| ResolveError {
+            code: "component_not_found".to_string(),
+            message: format!("component {key} not found"),
+            context_key: key.to_string(),
+        })?;
+
+        Ok(ResolvedComponent {
+            key: key.to_string(),
+            source: source.source.to_string(),
+            artifact: match source.artifact {
+                ComponentArtifactLocation::Inline { .. } => "inline".to_string(),
+                ComponentArtifactLocation::Remote => "remote".to_string(),
+            },
+            digest: source.digest.clone(),
+            expected_wasm_sha256: source.expected_wasm_sha256.clone(),
+            skip_digest_verification: source.skip_digest_verification,
+        })
+    }
+
+    fn request_key(request: &ResolveRequest) -> &str {
+        match request {
+            ResolveRequest::ById(value) => value.as_str(),
+            ResolveRequest::ByName(value) => value.as_str(),
+        }
+    }
+
+    fn classify_pack_lock_error(message: &str) -> &'static str {
+        if message.contains("duplicate component name") {
+            "duplicate_name"
+        } else if message.contains("duplicate component id") {
+            "duplicate_id"
+        } else if message.contains("conflicting refs") {
+            "conflicting_ref"
+        } else if message.contains("conflicting bundled paths") {
+            "conflicting_bundled_path"
+        } else if message.contains("conflicting wasm_sha256") {
+            "conflicting_wasm_sha256"
+        } else if message.contains("missing source_ref") {
+            "missing_source_ref"
+        } else if message.contains("marked bundled but bundled_path is missing") {
+            "missing_bundled_path"
+        } else if message.contains("missing wasm_sha256") {
+            "missing_wasm_sha256"
+        } else if message.contains("tag ref") && message.contains("not bundled") {
+            "tag_ref_requires_bundle"
+        } else if message.contains("missing resolved_digest") {
+            "missing_resolved_digest"
+        } else if message.contains("invalid component ref") {
+            "invalid_component_ref"
+        } else if message.contains("sha256 digest") {
+            "invalid_sha256"
+        } else {
+            "unknown_error"
+        }
+    }
+
+    fn known_error_codes() -> BTreeSet<&'static str> {
+        [
+            "component_sources_error",
+            "missing_component_sources",
+            "component_not_found",
+            "duplicate_name",
+            "duplicate_id",
+            "conflicting_ref",
+            "conflicting_bundled_path",
+            "conflicting_wasm_sha256",
+            "missing_source_ref",
+            "missing_bundled_path",
+            "missing_wasm_sha256",
+            "tag_ref_requires_bundle",
+            "missing_resolved_digest",
+            "invalid_component_ref",
+            "invalid_sha256",
+            "unknown_error",
+        ]
+        .into_iter()
+        .collect()
+    }
+
+    fn proptest_config() -> ProptestConfig {
+        let cases = std::env::var("PROPTEST_CASES")
+            .ok()
+            .and_then(|value| value.parse::<u32>().ok())
+            .unwrap_or(128);
+        ProptestConfig {
+            cases,
+            failure_persistence: None,
+            ..ProptestConfig::default()
+        }
+    }
+
+    fn proptest_seed() -> Option<[u8; 32]> {
+        let seed = std::env::var("PROPTEST_SEED")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())?;
+        let mut bytes = [0u8; 32];
+        bytes[..8].copy_from_slice(&seed.to_le_bytes());
+        Some(bytes)
+    }
+
+    fn run_cases(strategy: impl Strategy<Value = Scenario>, cases: u32, seed: Option<[u8; 32]>) {
+        let config = ProptestConfig {
+            cases,
+            failure_persistence: None,
+            ..ProptestConfig::default()
+        };
+        let mut runner = match seed {
+            Some(bytes) => {
+                TestRunner::new_with_rng(config, TestRng::from_seed(RngAlgorithm::ChaCha, &bytes))
+            }
+            None => TestRunner::new(config),
+        };
+        runner
+            .run(&strategy, |scenario| {
+                run_scenario(&scenario);
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    fn run_scenario(scenario: &Scenario) {
+        let known_codes = known_error_codes();
+        let first = resolve_component_test(
+            scenario.component_sources.as_ref(),
+            scenario.pack_lock.as_ref(),
+            &scenario.request,
+        );
+        let second = resolve_component_test(
+            scenario.component_sources.as_ref(),
+            scenario.pack_lock.as_ref(),
+            &scenario.request,
+        );
+        assert_eq!(normalize_result(&first), normalize_result(&second));
+
+        if let Some(lock) = scenario.pack_lock.as_ref() {
+            let lock_only = resolve_component_test(None, Some(lock), &scenario.request);
+            assert_eq!(normalize_result(&first), normalize_result(&lock_only));
+        }
+
+        if let Err(err) = first.as_ref() {
+            assert!(
+                known_codes.contains(err.code.as_str()),
+                "unexpected error code {}: {}",
+                err.code,
+                err.message
+            );
+        }
+
+        if let Some(expected) = scenario.expected_sha256.as_deref() {
+            let expected_ok =
+                verify_wasm_sha256("test.component", expected, &scenario.bytes).is_ok();
+            let actual = compute_sha256_digest_for(&scenario.bytes);
+            if actual == normalize_sha256(expected).unwrap_or_default() {
+                assert!(expected_ok, "expected sha256 match to succeed");
+            } else {
+                assert!(!expected_ok, "expected sha256 mismatch to fail");
+            }
+        }
+    }
+
+    fn normalize_result(
+        result: &Result<ResolvedComponent, ResolveError>,
+    ) -> Result<ResolvedComponent, ResolveError> {
+        match result {
+            Ok(value) => Ok(value.clone()),
+            Err(err) => Err(err.clone()),
+        }
+    }
+
+    fn scenario_strategy() -> impl Strategy<Value = Scenario> {
+        let name = any::<u8>().prop_map(|n| format!("component{n}.core"));
+        let alt_name = any::<u8>().prop_map(|n| format!("component_alt{n}.core"));
+        let tag_ref = any::<bool>();
+        let bundled = any::<bool>();
+        let include_sha = any::<bool>();
+        let include_component_id = any::<bool>();
+        let request_by_id = any::<bool>();
+        let use_lock = any::<bool>();
+        let use_sources = any::<bool>();
+        let bytes = prop::collection::vec(any::<u8>(), 1..64);
+
+        (
+            name,
+            alt_name,
+            tag_ref,
+            bundled,
+            include_sha,
+            include_component_id,
+            request_by_id,
+            use_lock,
+            use_sources,
+            bytes,
+        )
+            .prop_map(
+                |(
+                    name,
+                    alt_name,
+                    tag_ref,
+                    bundled,
+                    include_sha,
+                    include_component_id,
+                    request_by_id,
+                    use_lock,
+                    use_sources,
+                    bytes,
+                )| {
+                    let component_id_str = if include_component_id {
+                        alt_name.clone()
+                    } else {
+                        name.clone()
+                    };
+                    let component_id = ComponentId::from_str(&component_id_str).ok();
+                    let source_ref = if tag_ref {
+                        format!("oci://registry.test/{name}:v1")
+                    } else {
+                        format!(
+                            "oci://registry.test/{name}@sha256:{}",
+                            hex::encode([0x11u8; 32])
+                        )
+                    };
+                    let expected_sha256 = if bundled && include_sha {
+                        Some(compute_sha256_digest_for(&bytes))
+                    } else {
+                        None
+                    };
+
+                    let lock_component = PackLockComponent {
+                        name: name.clone(),
+                        source_ref: Some(source_ref),
+                        legacy_ref: None,
+                        component_id,
+                        bundled: Some(bundled),
+                        bundled_path: if bundled {
+                            Some(format!("components/{name}.wasm"))
+                        } else {
+                            None
+                        },
+                        legacy_path: None,
+                        wasm_sha256: expected_sha256.clone(),
+                        legacy_sha256: None,
+                        resolved_digest: if bundled {
+                            None
+                        } else {
+                            Some("sha256:deadbeef".to_string())
+                        },
+                        digest: None,
+                    };
+
+                    let pack_lock = if use_lock {
+                        Some(PackLockV1 {
+                            schema_version: 1,
+                            components: vec![lock_component],
+                        })
+                    } else {
+                        None
+                    };
+
+                    let component_sources = if use_sources {
+                        Some(ComponentSourcesV1::new(vec![ComponentSourceEntryV1 {
+                            name: name.clone(),
+                            component_id: ComponentId::from_str(&name).ok(),
+                            source: ComponentSourceRef::from_str(
+                                "oci://registry.test/component@sha256:deadbeef",
+                            )
+                            .expect("component ref"),
+                            resolved: ResolvedComponentV1 {
+                                digest: "sha256:deadbeef".to_string(),
+                                signature: None,
+                                signed_by: None,
+                            },
+                            artifact: if bundled {
+                                ArtifactLocationV1::Inline {
+                                    wasm_path: format!("components/{name}.wasm"),
+                                    manifest_path: None,
+                                }
+                            } else {
+                                ArtifactLocationV1::Remote
+                            },
+                            licensing_hint: None,
+                            metering_hint: None,
+                        }]))
+                    } else {
+                        None
+                    };
+
+                    let request = if request_by_id {
+                        ResolveRequest::ById(component_id_str.clone())
+                    } else {
+                        ResolveRequest::ByName(name.clone())
+                    };
+
+                    Scenario {
+                        pack_lock,
+                        component_sources,
+                        request,
+                        expected_sha256,
+                        bytes,
+                    }
+                },
+            )
+    }
+
+    #[test]
+    fn pack_resolution_proptest() {
+        let seed = proptest_seed();
+        run_cases(scenario_strategy(), proptest_config().cases, seed);
+    }
+
+    #[test]
+    fn pack_resolution_regression_seeds() {
+        let seeds_path =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/proptest-seeds.txt");
+        let raw = std::fs::read_to_string(&seeds_path).expect("read proptest seeds");
+        for line in raw.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let seed = line.parse::<u64>().expect("seed must be an integer");
+            let mut bytes = [0u8; 32];
+            bytes[..8].copy_from_slice(&seed.to_le_bytes());
+            run_cases(scenario_strategy(), 1, Some(bytes));
+        }
     }
 }
 

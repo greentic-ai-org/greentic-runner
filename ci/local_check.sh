@@ -63,6 +63,15 @@ run_workspace_tests() {
   cargo test --workspace --all-targets --all-features
 }
 
+run_conformance() {
+  if [[ "${RUN_CONFORMANCE:-0}" == "1" ]]; then
+    echo "==> conformance harness"
+    cargo run -p greentic-runner -- conformance --packs tests/fixtures/packs --level L1
+  else
+    echo "==> Skipping conformance (RUN_CONFORMANCE != 1)"
+  fi
+}
+
 run_package() {
   if [[ "${LOCAL_CHECK_PACKAGE}" == "1" ]]; then
     echo "==> package dry-run (serialized)"
@@ -89,7 +98,7 @@ run_package() {
   fi
 }
 
-default_steps=("fmt" "clippy" "host_smoke" "crate_tests" "workspace_tests" "package")
+default_steps=("fmt" "clippy" "host_smoke" "crate_tests" "workspace_tests" "conformance" "package")
 if [[ -n "${LOCAL_CHECK_STEPS:-}" ]]; then
   steps_list="${LOCAL_CHECK_STEPS//,/ }"
   read -r -a steps <<< "$steps_list"
@@ -104,6 +113,7 @@ for step in "${steps[@]}"; do
     host_smoke) run_host_smoke ;;
     crate_tests) run_crate_tests ;;
     workspace_tests) run_workspace_tests ;;
+    conformance) run_conformance ;;
     package) run_package ;;
     *)
       echo "Unknown LOCAL_CHECK_STEPS entry: $step"

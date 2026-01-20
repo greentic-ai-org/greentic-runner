@@ -1,0 +1,16 @@
+---
+source: crates/greentic-runner/tests/snapshots.rs
+expression: normalized_actual
+---
+{
+  "output": {
+    "status": "ok"
+  },
+  "retry_errors": [
+    "component state.store failed: internal: Unavailable: transient state write"
+  ],
+  "state": {
+    "status": "ok"
+  },
+  "status": "completed"
+}

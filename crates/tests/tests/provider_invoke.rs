@@ -76,6 +76,7 @@ async fn provider_invoke_echoes_payload() -> Result<()> {
         session_id: None,
         provider_id: None,
         retry_config,
+        attempt: 1,
         observer: None,
         mocks: None,
     };
@@ -176,6 +177,7 @@ async fn provider_invoke_supports_messaging_secrets_events() -> Result<()> {
             session_id: None,
             provider_id: None,
             retry_config,
+            attempt: 1,
             observer: None,
             mocks: None,
         };
@@ -256,6 +258,7 @@ async fn component_exec_carries_operation_from_flow() -> Result<()> {
         session_id: None,
         provider_id: None,
         retry_config,
+        attempt: 1,
         observer: None,
         mocks: None,
     };

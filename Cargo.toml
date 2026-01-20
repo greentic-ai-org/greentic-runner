@@ -18,7 +18,7 @@ exclude = [
 [workspace.package]
 edition = "2024"
 license = "MIT"
-version = "0.4.39"
+version = "0.4.40"
 
 [workspace.dependencies]
 arc-swap = "1"
@@ -89,6 +89,8 @@ wasmtime-environ = { version = "40" }
 jsonschema = "0.38"
 handlebars = "6"
 dashmap = "6"
+proptest = "1"
+insta = { version = "1", features = ["json"] }
 
 [profile.release.package."echo-secret"]
 # Size-tuned build for the secrets_store_smoke fixture component.

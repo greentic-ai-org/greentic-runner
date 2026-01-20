@@ -24,6 +24,7 @@ fn instantiate_component(wasm: &Path, config: Arc<HostConfig>) -> Result<()> {
     let component = Component::from_file(&engine, wasm)
         .with_context(|| format!("failed to load {}", wasm.display()))?;
     let host_state = HostState::new(
+        "oauth-test".to_string(),
         Arc::clone(&config),
         Arc::new(BlockingClient::builder().build()?),
         None,

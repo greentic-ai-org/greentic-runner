@@ -606,6 +606,7 @@ impl Adapter for PackFlowAdapter {
             session_id: Some(session_owned.as_str()),
             provider_id: provider_owned.as_deref(),
             retry_config,
+            attempt: 1,
             observer: trace
                 .as_ref()
                 .map(|recorder| recorder as &dyn crate::runner::engine::ExecutionObserver),

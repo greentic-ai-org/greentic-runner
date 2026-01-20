@@ -18,6 +18,8 @@ use super::templating::{TemplateOptions, render_template_value};
 use crate::config::{FlowRetryConfig, HostConfig};
 use crate::pack::{FlowDescriptor, PackRuntime};
 use crate::telemetry::{FlowSpanAttributes, annotate_span, backoff_delay_ms, set_flow_context};
+#[cfg(feature = "fault-injection")]
+use crate::testing::fault_injection::{FaultContext, FaultPoint, maybe_fail};
 use crate::validate::{
     ValidationConfig, ValidationIssue, ValidationMode, validate_component_envelope,
     validate_tool_envelope,
@@ -302,10 +304,23 @@ impl FlowEngine {
         );
         let retry_config = ctx.retry_config;
         let original_input = input;
+        let mut ctx = ctx;
         async move {
             let mut attempt = 0u32;
             loop {
                 attempt += 1;
+                ctx.attempt = attempt;
+                #[cfg(feature = "fault-injection")]
+                {
+                    let fault_ctx = FaultContext {
+                        pack_id: ctx.pack_id,
+                        flow_id: ctx.flow_id,
+                        node_id: ctx.node_id,
+                        attempt: ctx.attempt,
+                    };
+                    maybe_fail(FaultPoint::Timeout, fault_ctx)
+                        .map_err(|err| anyhow!(err.to_string()))?;
+                }
                 match self.execute_once(&ctx, original_input.clone()).await {
                     Ok(value) => return Ok(value),
                     Err(err) => {
@@ -395,6 +410,17 @@ impl FlowEngine {
                 .cloned()
                 .unwrap_or_else(|| Value::Object(JsonMap::new()));
             let ctx_value = template_context(&state, prev);
+            #[cfg(feature = "fault-injection")]
+            {
+                let fault_ctx = FaultContext {
+                    pack_id: ctx.pack_id,
+                    flow_id: ctx.flow_id,
+                    node_id: Some(current.as_str()),
+                    attempt: ctx.attempt,
+                };
+                maybe_fail(FaultPoint::TemplateRender, fault_ctx)
+                    .map_err(|err| anyhow!(err.to_string()))?;
+            }
             let payload =
                 render_template_value(&payload_template, &ctx_value, TemplateOptions::default())
                     .context("failed to render node input template")?;
@@ -574,6 +600,7 @@ impl FlowEngine {
             session_id: ctx.session_id,
             provider_id: ctx.provider_id,
             retry_config: ctx.retry_config,
+            attempt: ctx.attempt,
             observer: ctx.observer,
             mocks: ctx.mocks,
         };
@@ -687,6 +714,17 @@ impl FlowEngine {
         })?;
         let pack = Arc::clone(&self.packs[pack_idx]);
         let exec_ctx = component_exec_ctx(ctx, node_id);
+        #[cfg(feature = "fault-injection")]
+        {
+            let fault_ctx = FaultContext {
+                pack_id: ctx.pack_id,
+                flow_id: ctx.flow_id,
+                node_id: Some(node_id),
+                attempt: ctx.attempt,
+            };
+            maybe_fail(FaultPoint::BeforeComponentCall, fault_ctx)
+                .map_err(|err| anyhow!(err.to_string()))?;
+        }
         let value = pack
             .invoke_component(
                 call.component_ref.as_str(),
@@ -696,6 +734,17 @@ impl FlowEngine {
                 input_json,
             )
             .await?;
+        #[cfg(feature = "fault-injection")]
+        {
+            let fault_ctx = FaultContext {
+                pack_id: ctx.pack_id,
+                flow_id: ctx.flow_id,
+                node_id: Some(node_id),
+                attempt: ctx.attempt,
+            };
+            maybe_fail(FaultPoint::AfterComponentCall, fault_ctx)
+                .map_err(|err| anyhow!(err.to_string()))?;
+        }
 
         if let Some((code, message)) = component_error(&value) {
             bail!(
@@ -793,9 +842,31 @@ impl FlowEngine {
             payload.provider_type.as_deref(),
         )?;
         let exec_ctx = component_exec_ctx(ctx, node_id);
+        #[cfg(feature = "fault-injection")]
+        {
+            let fault_ctx = FaultContext {
+                pack_id: ctx.pack_id,
+                flow_id: ctx.flow_id,
+                node_id: Some(node_id),
+                attempt: ctx.attempt,
+            };
+            maybe_fail(FaultPoint::BeforeToolCall, fault_ctx)
+                .map_err(|err| anyhow!(err.to_string()))?;
+        }
         let result = pack
             .invoke_provider(&binding, exec_ctx, &op, input_json)
             .await?;
+        #[cfg(feature = "fault-injection")]
+        {
+            let fault_ctx = FaultContext {
+                pack_id: ctx.pack_id,
+                flow_id: ctx.flow_id,
+                node_id: Some(node_id),
+                attempt: ctx.attempt,
+            };
+            maybe_fail(FaultPoint::AfterToolCall, fault_ctx)
+                .map_err(|err| anyhow!(err.to_string()))?;
+        }
 
         let output = if payload.out_map.is_null() {
             result
@@ -1092,7 +1163,7 @@ fn component_exec_ctx(ctx: &FlowContext<'_>, node_id: &str) -> ComponentExecCtx 
             trace_id: None,
             correlation_id: ctx.session_id.map(str::to_string),
             deadline_unix_ms: None,
-            attempt: 1,
+            attempt: ctx.attempt,
             idempotency_key: ctx.session_id.map(str::to_string),
         },
         flow_id: ctx.flow_id.to_string(),
@@ -1447,6 +1518,7 @@ mod tests {
             session_id: None,
             provider_id: None,
             retry_config,
+            attempt: 1,
             observer: None,
             mocks: None,
         };
@@ -1511,6 +1583,7 @@ mod tests {
             session_id: None,
             provider_id: None,
             retry_config,
+            attempt: 1,
             observer: None,
             mocks: None,
         };
@@ -1647,6 +1720,7 @@ mod tests {
                 max_attempts: 1,
                 base_delay_ms: 1,
             },
+            attempt: 1,
             observer: Some(&observer),
             mocks: None,
         };
@@ -1675,6 +1749,7 @@ pub struct FlowContext<'a> {
     pub session_id: Option<&'a str>,
     pub provider_id: Option<&'a str>,
     pub retry_config: RetryConfig,
+    pub attempt: u32,
     pub observer: Option<&'a dyn ExecutionObserver>,
     pub mocks: Option<&'a MockLayer>,
 }
@@ -1687,7 +1762,10 @@ pub struct RetryConfig {
 
 fn should_retry(err: &anyhow::Error) -> bool {
     let lower = err.to_string().to_lowercase();
-    lower.contains("transient") || lower.contains("unavailable") || lower.contains("internal")
+    lower.contains("transient")
+        || lower.contains("unavailable")
+        || lower.contains("internal")
+        || lower.contains("timeout")
 }
 
 impl From<FlowRetryConfig> for RetryConfig {

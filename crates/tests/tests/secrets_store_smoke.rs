@@ -52,6 +52,7 @@ fn invoke_component(wasm: &Path, config: Arc<HostConfig>) -> Result<String> {
     let component =
         Component::from_file(&engine, wasm).with_context(|| format!("failed to load {wasm:?}"))?;
     let host_state = HostState::new(
+        "secrets-store-smoke".to_string(),
         Arc::clone(&config),
         Arc::new(BlockingClient::builder().build()?),
         None,

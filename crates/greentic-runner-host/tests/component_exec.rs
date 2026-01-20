@@ -418,6 +418,7 @@ nodes:
         session_id: None,
         provider_id: None,
         retry_config,
+        attempt: 1,
         observer: None,
         mocks: None,
     };
@@ -502,6 +503,7 @@ nodes:
         session_id: None,
         provider_id: None,
         retry_config,
+        attempt: 1,
         observer: None,
         mocks: None,
     };
@@ -579,6 +581,7 @@ fn runtime_extension_flow_overrides_manifest_flow() -> Result<()> {
         session_id: None,
         provider_id: None,
         retry_config,
+        attempt: 1,
         observer: None,
         mocks: None,
     };

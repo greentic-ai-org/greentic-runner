@@ -47,6 +47,8 @@ tempfile.workspace = true
 walkdir.workspace = true
 
 [dev-dependencies]
+greentic-flow.workspace = true
+serial_test.workspace = true
 semver.workspace = true
 
 [lib]

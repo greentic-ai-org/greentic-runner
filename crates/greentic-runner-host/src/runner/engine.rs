@@ -697,6 +697,14 @@ impl FlowEngine {
             )
             .await?;
 
+        if let Some((code, message)) = component_error(&value) {
+            bail!(
+                "component {} failed: {}: {}",
+                call.component_ref,
+                code,
+                message
+            );
+        }
         Ok(NodeOutput::new(value))
     }
 
@@ -1090,6 +1098,24 @@ fn component_exec_ctx(ctx: &FlowContext<'_>, node_id: &str) -> ComponentExecCtx 
         flow_id: ctx.flow_id.to_string(),
         node_id: Some(node_id.to_string()),
     }
+}
+
+fn component_error(value: &Value) -> Option<(String, String)> {
+    let obj = value.as_object()?;
+    let ok = obj.get("ok").and_then(Value::as_bool)?;
+    if ok {
+        return None;
+    }
+    let err = obj.get("error")?.as_object()?;
+    let code = err
+        .get("code")
+        .and_then(Value::as_str)
+        .unwrap_or("component_error");
+    let message = err
+        .get("message")
+        .and_then(Value::as_str)
+        .unwrap_or("component reported error");
+    Some((code.to_string(), message.to_string()))
 }
 
 fn extract_wait_reason(payload: &Value) -> Option<String> {

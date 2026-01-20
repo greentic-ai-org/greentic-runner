@@ -14,8 +14,8 @@ use greentic_flow::flow_bundle::load_and_validate_bundle_with_flow;
 use greentic_runner_host::watcher;
 use greentic_runner_host::{Activity, HostBuilder, HostConfig, RunnerHost};
 use greentic_types::{
-    ComponentCapabilities, ComponentManifest, ComponentProfiles, FlowKind, PackFlowEntry, PackKind,
-    PackManifest, ResourceHints, encode_pack_manifest,
+    ComponentCapabilities, ComponentManifest, ComponentProfiles, FlowKind, HostCapabilities,
+    PackFlowEntry, PackKind, PackManifest, ResourceHints, StateCapabilities, encode_pack_manifest,
 };
 use runner_core::env::PackConfig;
 use semver::Version;
@@ -471,6 +471,16 @@ nodes:
 "#;
     let (_bundle, flow) = load_and_validate_bundle_with_flow(flow_yaml, None)?;
 
+    let capabilities = ComponentCapabilities {
+        host: HostCapabilities {
+            state: Some(StateCapabilities {
+                read: true,
+                write: true,
+            }),
+            ..HostCapabilities::default()
+        },
+        ..ComponentCapabilities::default()
+    };
     let manifest = PackManifest {
         schema_version: "1.0".into(),
         pack_id: "runner.state-store.fault".parse()?,
@@ -483,7 +493,7 @@ nodes:
             supports: vec![FlowKind::Messaging],
             world: "greentic:component@0.4.0".into(),
             profiles: ComponentProfiles::default(),
-            capabilities: ComponentCapabilities::default(),
+            capabilities,
             configurators: None,
             operations: Vec::new(),
             config_schema: None,

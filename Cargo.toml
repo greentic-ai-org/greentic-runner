@@ -85,7 +85,7 @@ greentic-telemetry = "0.4"
 walkdir = "2"
 wasmtime = { version = "40", default-features = false, features = ["component-model", "cranelift", "runtime", "std"] }
 wasmtime-wasi = { version = "40", default-features = false, features = ["p2"] }
-wasmtime-environ = { version = "40" }
+wasmtime-environ = { version = "41" }
 jsonschema = "0.38"
 handlebars = "6"
 dashmap = "6"

@@ -12,8 +12,8 @@ use lru::LruCache;
 use parking_lot::Mutex;
 use reqwest::Client;
 use serde_json::Value;
-use tokio::task::JoinHandle;
 use tokio::runtime::{Handle, Runtime};
+use tokio::task::JoinHandle;
 
 use crate::config::HostConfig;
 use crate::engine::host::{SessionHost, StateHost};
@@ -88,7 +88,7 @@ pub struct TenantRuntime {
 }
 
 /// Block on a future whether or not we're already inside a tokio runtime.
-pub fn block_on<F: Future<Output=R>, R>(future: F) -> R {
+pub fn block_on<F: Future<Output = R>, R>(future: F) -> R {
     if let Ok(handle) = Handle::try_current() {
         handle.block_on(future)
     } else {

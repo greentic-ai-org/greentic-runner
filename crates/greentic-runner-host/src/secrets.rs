@@ -80,8 +80,8 @@ pub fn read_secret_blocking(
     key: &str,
 ) -> Result<Vec<u8>> {
     let scoped_key = scoped_secret_path(ctx, key)?;
-    let bytes = block_on(manager.read(scoped_key.as_str()))
-        .map_err(|err| anyhow!(err.to_string()))?;
+    let bytes =
+        block_on(manager.read(scoped_key.as_str())).map_err(|err| anyhow!(err.to_string()))?;
     Ok(bytes)
 }
 
@@ -92,8 +92,7 @@ pub fn write_secret_blocking(
     value: &[u8],
 ) -> Result<()> {
     let scoped_key = scoped_secret_path(ctx, key)?;
-    block_on(manager.write(scoped_key.as_str(), value))
-        .map_err(|err| anyhow!(err.to_string()))?;
+    block_on(manager.write(scoped_key.as_str(), value)).map_err(|err| anyhow!(err.to_string()))?;
     Ok(())
 }
 

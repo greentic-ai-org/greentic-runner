@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
+use crate::runtime::block_on;
 use anyhow::{Context, Result, anyhow};
 use greentic_secrets_lib::env::EnvSecretsManager;
 use greentic_secrets_lib::{SecretScope, SecretsManager};
 use greentic_types::TenantCtx;
-use tokio::runtime::{Handle, Runtime};
 
 /// Shared secrets manager handle used by the host.
 pub type DynSecretsManager = Arc<dyn SecretsManager>;
@@ -80,16 +80,8 @@ pub fn read_secret_blocking(
     key: &str,
 ) -> Result<Vec<u8>> {
     let scoped_key = scoped_secret_path(ctx, key)?;
-    let bytes = if let Ok(handle) = Handle::try_current() {
-        handle
-            .block_on(manager.read(scoped_key.as_str()))
-            .map_err(|err| anyhow!(err.to_string()))?
-    } else {
-        Runtime::new()
-            .context("failed to initialise secrets runtime")?
-            .block_on(manager.read(scoped_key.as_str()))
-            .map_err(|err| anyhow!(err.to_string()))?
-    };
+    let bytes = block_on(manager.read(scoped_key.as_str()))
+        .map_err(|err| anyhow!(err.to_string()))?;
     Ok(bytes)
 }
 
@@ -100,16 +92,8 @@ pub fn write_secret_blocking(
     value: &[u8],
 ) -> Result<()> {
     let scoped_key = scoped_secret_path(ctx, key)?;
-    if let Ok(handle) = Handle::try_current() {
-        handle
-            .block_on(manager.write(scoped_key.as_str(), value))
-            .map_err(|err| anyhow!(err.to_string()))?
-    } else {
-        Runtime::new()
-            .context("failed to initialise secrets runtime")?
-            .block_on(manager.write(scoped_key.as_str(), value))
-            .map_err(|err| anyhow!(err.to_string()))?
-    };
+    block_on(manager.write(scoped_key.as_str(), value))
+        .map_err(|err| anyhow!(err.to_string()))?;
     Ok(())
 }
 

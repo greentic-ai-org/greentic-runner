@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::future::Future;
 use std::num::NonZeroUsize;
 use std::path::Path;
 use std::sync::Arc;
@@ -12,6 +13,7 @@ use parking_lot::Mutex;
 use reqwest::Client;
 use serde_json::Value;
 use tokio::task::JoinHandle;
+use tokio::runtime::{Handle, Runtime};
 
 use crate::config::HostConfig;
 use crate::engine::host::{SessionHost, StateHost};
@@ -83,6 +85,17 @@ pub struct TenantRuntime {
     mocks: Option<Arc<MockLayer>>,
     timer_handles: Mutex<Vec<JoinHandle<()>>>,
     secrets: DynSecretsManager,
+}
+
+/// Block on a future whether or not we're already inside a tokio runtime.
+pub fn block_on<F: Future<Output=R>, R>(future: F) -> R {
+    if let Ok(handle) = Handle::try_current() {
+        handle.block_on(future)
+    } else {
+        Runtime::new()
+            .expect("failed to create tokio runtime")
+            .block_on(future)
+    }
 }
 
 impl TenantRuntime {

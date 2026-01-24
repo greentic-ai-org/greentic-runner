@@ -16,6 +16,7 @@ use crate::provider_core::SchemaCorePre as ProviderComponentPre;
 use crate::provider_core_only;
 use crate::runtime_wasmtime::{Component, Engine, InstancePre, Linker, ResourceTable};
 use anyhow::{Context, Result, anyhow, bail};
+use futures::executor::block_on;
 use greentic_distributor_client::dist::{DistClient, DistError, DistOptions};
 use greentic_interfaces_wasmtime::host_helpers::v1::{
     self as host_v1, HostFns, add_all_v1_to_linker,
@@ -58,9 +59,10 @@ use serde::{Deserialize, Serialize};
 use serde_cbor;
 use serde_json::{self, Value};
 use sha2::Digest;
+use tempfile::TempDir;
 use tokio::fs;
 use wasmparser::{Parser, Payload};
-use wasmtime::StoreContextMut;
+use wasmtime::{Store, StoreContextMut};
 use zip::ZipArchive;
 
 use crate::runner::engine::{FlowContext, FlowEngine, FlowStatus};
@@ -75,7 +77,7 @@ use crate::secrets::{DynSecretsManager, read_secret_blocking, write_secret_block
 use crate::storage::state::STATE_PREFIX;
 use crate::storage::{DynSessionStore, DynStateStore};
 use crate::verify;
-use crate::wasi::RunnerWasiPolicy;
+use crate::wasi::{PreopenSpec, RunnerWasiPolicy};
 use tracing::warn;
 use wasmtime_wasi::p2::add_to_linker_sync as add_wasi_to_linker;
 use wasmtime_wasi::{WasiCtx, WasiCtxView, WasiView};
@@ -102,6 +104,7 @@ pub struct PackRuntime {
     session_store: Option<DynSessionStore>,
     state_store: Option<DynStateStore>,
     wasi_policy: Arc<RunnerWasiPolicy>,
+    assets_tempdir: Option<TempDir>,
     provider_registry: RwLock<Option<ProviderRegistry>>,
     secrets: DynSecretsManager,
     oauth_config: Option<OAuthBrokerConfig>,
@@ -114,6 +117,43 @@ struct PackComponent {
     #[allow(dead_code)]
     version: String,
     component: Arc<Component>,
+}
+
+fn run_on_wasi_thread<F, T>(task_name: &'static str, task: F) -> Result<T>
+where
+    F: FnOnce() -> Result<T> + Send + 'static,
+    T: Send + 'static,
+{
+    let builder = std::thread::Builder::new().name(format!("greentic-wasmtime-{task_name}"));
+    let handle = builder
+        .spawn(move || {
+            let pid = std::process::id();
+            let thread_id = std::thread::current().id();
+            let tokio_handle_present = tokio::runtime::Handle::try_current().is_ok();
+            tracing::info!(
+                event = "wasmtime.thread.start",
+                task = task_name,
+                pid,
+                thread_id = ?thread_id,
+                tokio_handle_present,
+                "starting Wasmtime thread"
+            );
+            task()
+        })
+        .context("failed to spawn Wasmtime thread")?;
+    handle
+        .join()
+        .map_err(|err| {
+            let reason = if let Some(msg) = err.downcast_ref::<&str>() {
+                msg.to_string()
+            } else if let Some(msg) = err.downcast_ref::<String>() {
+                msg.clone()
+            } else {
+                "unknown panic".to_string()
+            };
+            anyhow!("Wasmtime thread panicked: {reason}")
+        })
+        .and_then(|res| res)
 }
 
 #[derive(Debug, Default, Clone)]
@@ -236,6 +276,84 @@ impl HostState {
             component_ref,
             provider_core_component,
         })
+    }
+
+    fn instantiate_component_result(
+        linker: &mut Linker<ComponentState>,
+        store: &mut Store<ComponentState>,
+        component: &Component,
+        ctx: &ComponentExecCtx,
+        operation: &str,
+        input_json: &str,
+    ) -> Result<InvokeResult> {
+        let pre_instance = linker.instantiate_pre(component)?;
+        match component_api::v0_5::ComponentPre::new(pre_instance) {
+            Ok(pre) => {
+                let result = block_on(async {
+                    let bindings = pre.instantiate_async(&mut *store).await?;
+                    let node = bindings.greentic_component_node();
+                    let ctx_v05 = component_api::exec_ctx_v0_5(ctx);
+                    let operation_owned = operation.to_string();
+                    let input_owned = input_json.to_string();
+                    node.call_invoke(&mut *store, &ctx_v05, &operation_owned, &input_owned)
+                })?;
+                Ok(component_api::invoke_result_from_v0_5(result))
+            }
+            Err(err) => {
+                if is_missing_node_export(&err, "0.5.0") {
+                    let pre_instance = linker.instantiate_pre(component)?;
+                    let pre: component_api::v0_4::ComponentPre<ComponentState> =
+                        component_api::v0_4::ComponentPre::new(pre_instance)?;
+                    let result = block_on(async {
+                        let bindings = pre.instantiate_async(&mut *store).await?;
+                        let node = bindings.greentic_component_node();
+                        let ctx_v04 = component_api::exec_ctx_v0_4(ctx);
+                        let operation_owned = operation.to_string();
+                        let input_owned = input_json.to_string();
+                        node.call_invoke(&mut *store, &ctx_v04, &operation_owned, &input_owned)
+                    })?;
+                    Ok(component_api::invoke_result_from_v0_4(result))
+                } else {
+                    Err(err)
+                }
+            }
+        }
+    }
+
+    fn convert_invoke_result(result: InvokeResult) -> Result<Value> {
+        match result {
+            InvokeResult::Ok(body) => {
+                if body.is_empty() {
+                    return Ok(Value::Null);
+                }
+                serde_json::from_str(&body).or_else(|_| Ok(Value::String(body)))
+            }
+            InvokeResult::Err(NodeError {
+                code,
+                message,
+                retryable,
+                backoff_ms,
+                details,
+            }) => {
+                let mut obj = serde_json::Map::new();
+                obj.insert("ok".into(), Value::Bool(false));
+                let mut error = serde_json::Map::new();
+                error.insert("code".into(), Value::String(code));
+                error.insert("message".into(), Value::String(message));
+                error.insert("retryable".into(), Value::Bool(retryable));
+                if let Some(backoff) = backoff_ms {
+                    error.insert("backoff_ms".into(), Value::Number(backoff.into()));
+                }
+                if let Some(details) = details {
+                    error.insert(
+                        "details".into(),
+                        serde_json::from_str(&details).unwrap_or(Value::String(details)),
+                    );
+                }
+                obj.insert("error".into(), Value::Object(error));
+                Ok(Value::Object(obj))
+            }
+        }
     }
 
     pub fn get_secret(&self, key: &str) -> Result<String> {
@@ -1166,6 +1284,17 @@ impl PackRuntime {
                 None
             }
         });
+        let (pack_assets_dir, assets_tempdir) =
+            locate_pack_assets(materialized_root.as_deref(), archive_hint)?;
+        let setup_yaml_exists = pack_assets_dir
+            .as_ref()
+            .map(|dir| dir.join("setup.yaml").is_file())
+            .unwrap_or(false);
+        tracing::info!(
+            pack_root = %safe_path.display(),
+            assets_setup_yaml_exists = setup_yaml_exists,
+            "pack unpack metadata"
+        );
 
         if let Some(root) = materialized_root.as_ref() {
             match load_manifest_and_flows_from_dir(root) {
@@ -1367,6 +1496,13 @@ impl PackRuntime {
                 component_manifests.insert(component.id.as_str().to_string(), component.clone());
             }
         }
+        let mut pack_policy = (*wasi_policy).clone();
+        if let Some(dir) = pack_assets_dir {
+            tracing::debug!(path = %dir.display(), "preopening pack assets directory for WASI /assets");
+            pack_policy =
+                pack_policy.with_preopen(PreopenSpec::new(dir, "/assets").read_only(true));
+        }
+        let wasi_policy = Arc::new(pack_policy);
         Ok(Self {
             path: safe_path,
             archive_path: archive_hint.map(Path::to_path_buf),
@@ -1384,6 +1520,7 @@ impl PackRuntime {
             session_store,
             state_store,
             wasi_policy,
+            assets_tempdir,
             provider_registry: RwLock::new(None),
             secrets,
             oauth_config,
@@ -1480,85 +1617,54 @@ impl PackRuntime {
             .components
             .get(component_ref)
             .with_context(|| format!("component '{component_ref}' not found in pack"))?;
-
-        let mut linker = Linker::new(&self.engine);
+        let engine = self.engine.clone();
+        let config = Arc::clone(&self.config);
+        let http_client = Arc::clone(&self.http_client);
+        let mocks = self.mocks.clone();
+        let session_store = self.session_store.clone();
+        let state_store = self.state_store.clone();
+        let secrets = Arc::clone(&self.secrets);
+        let oauth_config = self.oauth_config.clone();
+        let wasi_policy = Arc::clone(&self.wasi_policy);
+        let pack_id = self.metadata().pack_id.clone();
         let allow_state_store = self.allows_state_store(component_ref);
-        register_all(&mut linker, allow_state_store)?;
-        add_component_control_to_linker(&mut linker)?;
+        let component = pack_component.component.clone();
+        let component_ref_owned = component_ref.to_string();
+        let operation_owned = operation.to_string();
+        let input_owned = input_json;
+        let ctx_owned = ctx;
 
-        let host_state = HostState::new(
-            self.metadata().pack_id.clone(),
-            Arc::clone(&self.config),
-            Arc::clone(&self.http_client),
-            self.mocks.clone(),
-            self.session_store.clone(),
-            self.state_store.clone(),
-            Arc::clone(&self.secrets),
-            self.oauth_config.clone(),
-            Some(ctx.clone()),
-            Some(component_ref.to_string()),
-            false,
-        )?;
-        let store_state = ComponentState::new(host_state, Arc::clone(&self.wasi_policy))?;
-        let mut store = wasmtime::Store::new(&self.engine, store_state);
-        let pre_instance = linker.instantiate_pre(pack_component.component.as_ref())?;
-        let result = match component_api::v0_5::ComponentPre::new(pre_instance) {
-            Ok(pre) => {
-                let bindings = pre.instantiate_async(&mut store).await?;
-                let node = bindings.greentic_component_node();
-                let ctx_v05 = component_api::exec_ctx_v0_5(&ctx);
-                let result = node.call_invoke(&mut store, &ctx_v05, operation, &input_json)?;
-                component_api::invoke_result_from_v0_5(result)
-            }
-            Err(err) => {
-                if is_missing_node_export(&err, "0.5.0") {
-                    let pre_instance = linker.instantiate_pre(pack_component.component.as_ref())?;
-                    let pre: component_api::v0_4::ComponentPre<ComponentState> =
-                        component_api::v0_4::ComponentPre::new(pre_instance)?;
-                    let bindings = pre.instantiate_async(&mut store).await?;
-                    let node = bindings.greentic_component_node();
-                    let ctx_v04 = component_api::exec_ctx_v0_4(&ctx);
-                    let result = node.call_invoke(&mut store, &ctx_v04, operation, &input_json)?;
-                    component_api::invoke_result_from_v0_4(result)
-                } else {
-                    return Err(err);
-                }
-            }
-        };
+        run_on_wasi_thread("component.invoke", move || {
+            let mut linker = Linker::new(&engine);
+            register_all(&mut linker, allow_state_store)?;
+            add_component_control_to_linker(&mut linker)?;
 
-        match result {
-            InvokeResult::Ok(body) => {
-                if body.is_empty() {
-                    return Ok(Value::Null);
-                }
-                serde_json::from_str(&body).or_else(|_| Ok(Value::String(body)))
-            }
-            InvokeResult::Err(NodeError {
-                code,
-                message,
-                retryable,
-                backoff_ms,
-                details,
-            }) => {
-                let mut obj = serde_json::Map::new();
-                obj.insert("ok".into(), Value::Bool(false));
-                let mut error = serde_json::Map::new();
-                error.insert("code".into(), Value::String(code));
-                error.insert("message".into(), Value::String(message));
-                error.insert("retryable".into(), Value::Bool(retryable));
-                if let Some(backoff) = backoff_ms {
-                    error.insert("backoff_ms".into(), Value::Number(backoff.into()));
-                }
-                if let Some(details) = details {
-                    error.insert(
-                        "details".into(),
-                        serde_json::from_str(&details).unwrap_or(Value::String(details)),
-                    );
-                }
-                obj.insert("error".into(), Value::Object(error));
-                Ok(Value::Object(obj))
-            }
-        }
+            let host_state = HostState::new(
+                pack_id.clone(),
+                config,
+                http_client,
+                mocks,
+                session_store,
+                state_store,
+                secrets,
+                oauth_config,
+                Some(ctx_owned.clone()),
+                Some(component_ref_owned.clone()),
+                false,
+            )?;
+            let store_state = ComponentState::new(host_state, wasi_policy)?;
+            let mut store = wasmtime::Store::new(&engine, store_state);
+
+            let invoke_result = HostState::instantiate_component_result(
+                &mut linker,
+                &mut store,
+                &component,
+                &ctx_owned,
+                &operation_owned,
+                &input_owned,
+            )?;
+            HostState::convert_invoke_result(invoke_result)
+        })
     }
 
     pub fn resolve_provider(
@@ -1577,39 +1683,57 @@ impl PackRuntime {
         op: &str,
         input_json: Vec<u8>,
     ) -> Result<Value> {
-        let component_ref = &binding.component_ref;
-        let pack_component = self
-            .components
-            .get(component_ref)
-            .with_context(|| format!("provider component '{component_ref}' not found in pack"))?;
+        let component_ref_owned = binding.component_ref.clone();
+        let pack_component = self.components.get(&component_ref_owned).with_context(|| {
+            format!("provider component '{component_ref_owned}' not found in pack")
+        })?;
+        let component = pack_component.component.clone();
 
-        let mut linker = Linker::new(&self.engine);
-        let allow_state_store = self.allows_state_store(component_ref);
-        register_all(&mut linker, allow_state_store)?;
-        add_component_control_to_linker(&mut linker)?;
-        let pre_instance = linker.instantiate_pre(pack_component.component.as_ref())?;
-        let pre: ProviderComponentPre<ComponentState> = ProviderComponentPre::new(pre_instance)?;
+        let engine = self.engine.clone();
+        let config = Arc::clone(&self.config);
+        let http_client = Arc::clone(&self.http_client);
+        let mocks = self.mocks.clone();
+        let session_store = self.session_store.clone();
+        let state_store = self.state_store.clone();
+        let secrets = Arc::clone(&self.secrets);
+        let oauth_config = self.oauth_config.clone();
+        let wasi_policy = Arc::clone(&self.wasi_policy);
+        let pack_id = self.metadata().pack_id.clone();
+        let allow_state_store = self.allows_state_store(&component_ref_owned);
+        let input_owned = input_json;
+        let op_owned = op.to_string();
+        let ctx_owned = ctx;
 
-        let host_state = HostState::new(
-            self.metadata().pack_id.clone(),
-            Arc::clone(&self.config),
-            Arc::clone(&self.http_client),
-            self.mocks.clone(),
-            self.session_store.clone(),
-            self.state_store.clone(),
-            Arc::clone(&self.secrets),
-            self.oauth_config.clone(),
-            Some(ctx),
-            Some(component_ref.to_string()),
-            true,
-        )?;
-        let store_state = ComponentState::new(host_state, Arc::clone(&self.wasi_policy))?;
-        let mut store = wasmtime::Store::new(&self.engine, store_state);
-        let bindings: crate::provider_core::SchemaCore = pre.instantiate_async(&mut store).await?;
-        let provider = bindings.greentic_provider_core_schema_core_api();
+        run_on_wasi_thread("provider.invoke", move || {
+            let mut linker = Linker::new(&engine);
+            register_all(&mut linker, allow_state_store)?;
+            add_component_control_to_linker(&mut linker)?;
+            let pre_instance = linker.instantiate_pre(component.as_ref())?;
+            let pre: ProviderComponentPre<ComponentState> =
+                ProviderComponentPre::new(pre_instance)?;
 
-        let result = provider.call_invoke(&mut store, op, &input_json)?;
-        deserialize_json_bytes(result)
+            let host_state = HostState::new(
+                pack_id.clone(),
+                config,
+                http_client,
+                mocks,
+                session_store,
+                state_store,
+                secrets,
+                oauth_config,
+                Some(ctx_owned.clone()),
+                Some(component_ref_owned.clone()),
+                true,
+            )?;
+            let store_state = ComponentState::new(host_state, wasi_policy)?;
+            let mut store = wasmtime::Store::new(&engine, store_state);
+            let bindings: crate::provider_core::SchemaCore =
+                block_on(async { pre.instantiate_async(&mut store).await })?;
+            let provider = bindings.greentic_provider_core_schema_core_api();
+
+            let result = provider.call_invoke(&mut store, &op_owned, &input_owned)?;
+            deserialize_json_bytes(result)
+        })
     }
 
     fn provider_registry(&self) -> Result<ProviderRegistry> {
@@ -1764,6 +1888,7 @@ impl PackRuntime {
             session_store: None,
             state_store: None,
             wasi_policy: Arc::new(RunnerWasiPolicy::new()),
+            assets_tempdir: None,
             provider_registry: RwLock::new(None),
             secrets: crate::secrets::default_manager()?,
             oauth_config: None,
@@ -2996,6 +3121,58 @@ mod pack_resolution_prop_tests {
             bytes[..8].copy_from_slice(&seed.to_le_bytes());
             run_cases(scenario_strategy(), 1, Some(bytes));
         }
+    }
+}
+
+fn locate_pack_assets(
+    materialized_root: Option<&Path>,
+    archive_hint: Option<&Path>,
+) -> Result<(Option<PathBuf>, Option<TempDir>)> {
+    if let Some(root) = materialized_root {
+        let assets = root.join("assets");
+        if assets.is_dir() {
+            return Ok((Some(assets), None));
+        }
+    }
+    if let Some(path) = archive_hint {
+        if let Some((tempdir, assets)) = extract_assets_from_archive(path)? {
+            return Ok((Some(assets), Some(tempdir)));
+        }
+    }
+    Ok((None, None))
+}
+
+fn extract_assets_from_archive(path: &Path) -> Result<Option<(TempDir, PathBuf)>> {
+    let file =
+        File::open(path).with_context(|| format!("failed to open pack {}", path.display()))?;
+    let mut archive =
+        ZipArchive::new(file).with_context(|| format!("failed to read pack {}", path.display()))?;
+    let temp = TempDir::new().context("failed to create temporary assets directory")?;
+    let mut found = false;
+    for idx in 0..archive.len() {
+        let mut entry = archive.by_index(idx)?;
+        let name = entry.name();
+        if !name.starts_with("assets/") {
+            continue;
+        }
+        let dest = temp.path().join(name);
+        if name.ends_with('/') {
+            std::fs::create_dir_all(&dest)?;
+            found = true;
+            continue;
+        }
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let mut outfile = std::fs::File::create(&dest)?;
+        std::io::copy(&mut entry, &mut outfile)?;
+        found = true;
+    }
+    if found {
+        let assets_path = temp.path().join("assets");
+        Ok(Some((temp, assets_path)))
+    } else {
+        Ok(None)
     }
 }
 

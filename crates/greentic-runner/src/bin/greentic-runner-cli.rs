@@ -266,6 +266,7 @@ fn main() -> Result<()> {
     }
 
     let log_path = init_run_logging()?;
+    log_runner_start();
     println!("Run logs: {}", log_path.display());
     configure_wasmtime_home()?;
     configure_proxy_env();
@@ -452,6 +453,19 @@ fn build_mocks_config(setting: MockSettingArg, allow_hosts: Vec<String>) -> Resu
     }
 
     Ok(config)
+}
+
+fn log_runner_start() {
+    let pid = std::process::id();
+    let thread_id = std::thread::current().id();
+    let tokio_handle_present = tokio::runtime::Handle::try_current().is_ok();
+    tracing::info!(
+        event = "runner.start",
+        pid,
+        thread_id = ?thread_id,
+        tokio_handle_present,
+        "greentic-runner process started"
+    );
 }
 
 #[allow(clippy::too_many_arguments)]

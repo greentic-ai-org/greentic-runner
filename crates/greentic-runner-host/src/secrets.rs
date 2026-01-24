@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::runtime::block_on;
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Result, anyhow};
 use greentic_secrets_lib::env::EnvSecretsManager;
 use greentic_secrets_lib::{SecretScope, SecretsManager};
 use greentic_types::TenantCtx;

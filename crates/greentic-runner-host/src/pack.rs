@@ -936,11 +936,14 @@ fn load_manifest_and_flows(path: &Path) -> Result<ManifestLoad> {
             })
         }
         Err(err) => {
-            tracing::debug!(error = %err, pack = %path.display(), "decode_pack_manifest failed; trying legacy manifest");
-            // Fall back to legacy pack manifest
+            tracing::debug!(
+                error = %err,
+                pack = %path.display(),
+                "decode_pack_manifest failed for archive; falling back to legacy manifest"
+            );
             let legacy: legacy_pack::PackManifest = serde_cbor::from_slice(&bytes)
                 .context("failed to decode legacy pack manifest from manifest.cbor")?;
-            let flows = load_legacy_flows(&mut archive, &legacy)?;
+            let flows = load_legacy_flows_from_archive(&mut archive, path, &legacy)?;
             Ok(ManifestLoad::Legacy {
                 manifest: Box::new(legacy),
                 flows,
@@ -978,18 +981,38 @@ fn load_manifest_and_flows_from_dir(root: &Path) -> Result<ManifestLoad> {
     }
 }
 
-fn load_legacy_flows(
-    archive: &mut ZipArchive<File>,
+fn load_legacy_flows_from_dir(
+    root: &Path,
     manifest: &legacy_pack::PackManifest,
+) -> Result<PackFlows> {
+    build_legacy_flows(manifest, |rel_path| {
+        let path = root.join(rel_path);
+        std::fs::read(&path).with_context(|| format!("missing flow json {}", path.display()))
+    })
+}
+
+fn load_legacy_flows_from_archive(
+    archive: &mut ZipArchive<File>,
+    pack_path: &Path,
+    manifest: &legacy_pack::PackManifest,
+) -> Result<PackFlows> {
+    build_legacy_flows(manifest, |rel_path| {
+        read_entry(archive, rel_path)
+            .with_context(|| format!("missing flow json {} in {}", rel_path, pack_path.display()))
+    })
+}
+
+fn build_legacy_flows(
+    manifest: &legacy_pack::PackManifest,
+    mut read_json: impl FnMut(&str) -> Result<Vec<u8>>,
 ) -> Result<PackFlows> {
     let mut flows = HashMap::new();
     let mut descriptors = Vec::new();
 
     for entry in &manifest.flows {
-        let bytes = read_entry(archive, &entry.file_json)
+        let bytes = read_json(&entry.file_json)
             .with_context(|| format!("missing flow json {}", entry.file_json))?;
-        let doc: FlowDoc = serde_json::from_slice(&bytes)
-            .with_context(|| format!("failed to decode flow doc {}", entry.file_json))?;
+        let doc = parse_flow_doc_with_legacy_aliases(&bytes, &entry.file_json)?;
         let normalized = normalize_flow_doc(doc);
         let flow_ir = flow_doc_to_ir(normalized)?;
         let flow = flow_ir_to_flow(flow_ir)?;
@@ -1023,50 +1046,16 @@ fn load_legacy_flows(
     })
 }
 
-fn load_legacy_flows_from_dir(
-    root: &Path,
-    manifest: &legacy_pack::PackManifest,
-) -> Result<PackFlows> {
-    let mut flows = HashMap::new();
-    let mut descriptors = Vec::new();
-
-    for entry in &manifest.flows {
-        let path = root.join(&entry.file_json);
-        let bytes = std::fs::read(&path)
-            .with_context(|| format!("missing flow json {}", path.display()))?;
-        let doc: FlowDoc = serde_json::from_slice(&bytes)
-            .with_context(|| format!("failed to decode flow doc {}", path.display()))?;
-        let normalized = normalize_flow_doc(doc);
-        let flow_ir = flow_doc_to_ir(normalized)?;
-        let flow = flow_ir_to_flow(flow_ir)?;
-
-        descriptors.push(FlowDescriptor {
-            id: entry.id.clone(),
-            flow_type: entry.kind.clone(),
-            pack_id: manifest.meta.pack_id.clone(),
-            profile: manifest.meta.pack_id.clone(),
-            version: manifest.meta.version.to_string(),
-            description: None,
-        });
-        flows.insert(entry.id.clone(), flow);
+fn parse_flow_doc_with_legacy_aliases(bytes: &[u8], path: &str) -> Result<FlowDoc> {
+    let mut value: Value = serde_json::from_slice(bytes)
+        .with_context(|| format!("failed to decode flow doc {}", path))?;
+    if let Some(map) = value.as_object_mut()
+        && !map.contains_key("type")
+        && let Some(flow_type) = map.remove("flow_type")
+    {
+        map.insert("type".to_string(), flow_type);
     }
-
-    let mut entry_flows = manifest.meta.entry_flows.clone();
-    if entry_flows.is_empty() {
-        entry_flows = manifest.flows.iter().map(|f| f.id.clone()).collect();
-    }
-    let metadata = PackMetadata {
-        pack_id: manifest.meta.pack_id.clone(),
-        version: manifest.meta.version.to_string(),
-        entry_flows,
-        secret_requirements: Vec::new(),
-    };
-
-    Ok(PackFlows {
-        descriptors,
-        flows,
-        metadata,
-    })
+    serde_json::from_value(value).with_context(|| format!("failed to decode flow doc {}", path))
 }
 
 pub struct ComponentState {
@@ -1324,25 +1313,28 @@ impl PackRuntime {
             && legacy_manifest.is_none()
             && let Some(archive_path) = archive_hint
         {
-            match load_manifest_and_flows(archive_path) {
-                Ok(ManifestLoad::New {
+            let manifest_load = load_manifest_and_flows(archive_path).with_context(|| {
+                format!(
+                    "failed to load manifest.cbor from {}",
+                    archive_path.display()
+                )
+            })?;
+            match manifest_load {
+                ManifestLoad::New {
                     manifest: m,
                     flows: cache,
-                }) => {
+                } => {
                     metadata = cache.metadata.clone();
                     manifest = Some(*m);
                     flows = Some(cache);
                 }
-                Ok(ManifestLoad::Legacy {
+                ManifestLoad::Legacy {
                     manifest: m,
                     flows: cache,
-                }) => {
+                } => {
                     metadata = cache.metadata.clone();
                     legacy_manifest = Some(m);
                     flows = Some(cache);
-                }
-                Err(err) => {
-                    warn!(error = %err, pack = %archive_path.display(), "failed to parse pack manifest; skipping flows");
                 }
             }
         }

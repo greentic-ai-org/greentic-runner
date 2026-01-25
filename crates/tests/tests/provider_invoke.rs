@@ -304,6 +304,7 @@ fn build_pack(component_path: &Path, pack_path: &Path, flows: &[Flow]) -> Result
     let manifest = PackManifest {
         schema_version: "1.0".into(),
         pack_id: "provider.test".parse()?,
+        name: None,
         version: Version::parse("0.0.1")?,
         kind: PackKind::Application,
         publisher: "test".into(),
@@ -365,6 +366,7 @@ fn build_component_pack(
     let manifest = PackManifest {
         schema_version: "1.0".into(),
         pack_id: pack_id.parse()?,
+        name: None,
         version: Version::parse("0.0.1")?,
         kind: PackKind::Application,
         publisher: "test".into(),

@@ -1,10 +1,10 @@
 {
   "acme": {
     "main_pack": {
-      "name": "ai.greentic.runner.example",
+      "name": "runner.components",
       "version": "0.1.0",
       "locator": "./packs/demo.gtpack",
-      "digest": "sha256:c6ba298a9a4154f8fff7486b6594b4235a771b525824bfe48e691ed16ff8ab37"
+      "digest": "sha256:a3195ff0a9befb0192ef4fa7f5aa7fea944c9a9fa58aa25a4e80e9e80b5c36c1"
     },
     "overlays": []
   }

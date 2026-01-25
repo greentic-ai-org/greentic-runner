@@ -67,6 +67,7 @@ fn build_pack(pack_path: &Path) -> Result<()> {
     let manifest = PackManifest {
         schema_version: "1.0".into(),
         pack_id: "runner.components.test".parse()?,
+        name: None,
         version: Version::parse("0.0.0")?,
         kind: PackKind::Application,
         publisher: "test".into(),
@@ -144,6 +145,7 @@ fn build_pack_with_component_sources(
     let mut manifest = PackManifest {
         schema_version: "1.0".into(),
         pack_id: "runner.components.remote".parse()?,
+        name: None,
         version: Version::parse("0.0.0")?,
         kind: PackKind::Application,
         publisher: "test".into(),
@@ -225,6 +227,7 @@ fn build_pack_with_component_sources_only(
     let mut manifest = PackManifest {
         schema_version: "1.0".into(),
         pack_id: "runner.components.sources-only".parse()?,
+        name: None,
         version: Version::parse("0.0.0")?,
         kind: PackKind::Application,
         publisher: "test".into(),
@@ -260,6 +263,28 @@ fn build_pack_with_component_sources_only(
                 .with_context(|| format!("open component {}", artifact_path.display()))?;
             std::io::copy(&mut file, &mut writer)?;
         }
+    }
+
+    writer.finish().context("finalise test pack")?;
+    Ok(())
+}
+
+fn write_manifest_only_gtpack(
+    pack_path: &Path,
+    manifest: &PackManifest,
+    extra_entries: &[(&str, &[u8])],
+) -> Result<()> {
+    let mut writer =
+        ZipWriter::new(std::fs::File::create(pack_path).context("create pack archive for test")?);
+    let options: FileOptions<'_, ()> =
+        FileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    let manifest_bytes = encode_pack_manifest(manifest)?;
+    writer.start_file("manifest.cbor", options)?;
+    writer.write_all(&manifest_bytes)?;
+
+    for (name, data) in extra_entries {
+        writer.start_file(name, options)?;
+        writer.write_all(data)?;
     }
 
     writer.finish().context("finalise test pack")?;
@@ -393,6 +418,7 @@ fn build_state_store_pack(pack_path: &Path, include_state_capability: bool) -> R
     let manifest = PackManifest {
         schema_version: "1.0".into(),
         pack_id: "state.store.test".parse()?,
+        name: None,
         version: Version::parse("0.0.0")?,
         kind: PackKind::Application,
         publisher: "test".into(),
@@ -818,5 +844,148 @@ fn state_store_is_gated_without_capability() -> Result<()> {
         result.is_err(),
         "state store should be gated without capability"
     );
+    Ok(())
+}
+
+#[test]
+fn gtpack_cbor_only_pack_loads() -> Result<()> {
+    let rt = *RUNTIME;
+    let temp = TempDir::new()?;
+    let gtpack = temp.path().join("cbor-only.gtpack");
+    let bindings_path = temp.path().join("bindings.yaml");
+    std::fs::write(&bindings_path, b"tenant: demo")?;
+
+    let manifest = PackManifest {
+        schema_version: "1.0".into(),
+        pack_id: "cbor.only.test".parse()?,
+        name: None,
+        version: Version::parse("1.0.0")?,
+        kind: PackKind::Application,
+        publisher: "demo".into(),
+        components: Vec::new(),
+        flows: Vec::new(),
+        dependencies: Vec::new(),
+        capabilities: Vec::new(),
+        signatures: Default::default(),
+        secret_requirements: Vec::new(),
+        bootstrap: None,
+        extensions: None,
+    };
+
+    write_manifest_only_gtpack(&gtpack, &manifest, &[])?;
+
+    let config = Arc::new(host_config(&bindings_path));
+    let runtime = Arc::new(rt.block_on(PackRuntime::load(
+        &gtpack,
+        Arc::clone(&config),
+        None,
+        None,
+        None,
+        None,
+        Arc::new(RunnerWasiPolicy::new()),
+        greentic_runner_host::secrets::default_manager()?,
+        None,
+        false,
+        ComponentResolution::default(),
+    ))?);
+
+    assert_eq!(runtime.metadata().pack_id, manifest.pack_id.as_str());
+    let flows = rt.block_on(runtime.list_flows())?;
+    assert!(flows.is_empty());
+    Ok(())
+}
+
+#[test]
+fn gtpack_missing_manifest_errors() -> Result<()> {
+    let rt = *RUNTIME;
+    let temp = TempDir::new()?;
+    let gtpack = temp.path().join("missing-manifest.gtpack");
+    let bindings_path = temp.path().join("bindings.yaml");
+    std::fs::write(&bindings_path, b"tenant: demo")?;
+
+    let mut writer =
+        ZipWriter::new(std::fs::File::create(&gtpack).context("create pack archive for test")?);
+    let options: FileOptions<'_, ()> =
+        FileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    writer.start_file("pack.yaml", options)?;
+    writer.write_all(b"name: manifest missing")?;
+    writer.finish().context("finalise test pack")?;
+
+    let config = Arc::new(host_config(&bindings_path));
+    let err = rt
+        .block_on(PackRuntime::load(
+            &gtpack,
+            Arc::clone(&config),
+            None,
+            None,
+            None,
+            None,
+            Arc::new(RunnerWasiPolicy::new()),
+            greentic_runner_host::secrets::default_manager()?,
+            None,
+            false,
+            ComponentResolution::default(),
+        ))
+        .err()
+        .expect("missing manifest should error");
+
+    let message = err.to_string();
+    assert!(
+        message.contains("manifest.cbor"),
+        "error should mention manifest.cbor: {message}"
+    );
+    Ok(())
+}
+
+#[test]
+fn gtpack_legacy_artifacts_are_ignored() -> Result<()> {
+    let rt = *RUNTIME;
+    let temp = TempDir::new()?;
+    let gtpack = temp.path().join("legacy-artifacts.gtpack");
+    let bindings_path = temp.path().join("bindings.yaml");
+    std::fs::write(&bindings_path, b"tenant: demo")?;
+
+    let manifest = PackManifest {
+        schema_version: "1.0".into(),
+        pack_id: "legacy.ignore.test".parse()?,
+        name: None,
+        version: Version::parse("1.0.0")?,
+        kind: PackKind::Application,
+        publisher: "demo".into(),
+        components: Vec::new(),
+        flows: Vec::new(),
+        dependencies: Vec::new(),
+        capabilities: Vec::new(),
+        signatures: Default::default(),
+        secret_requirements: Vec::new(),
+        bootstrap: None,
+        extensions: None,
+    };
+
+    let extras = [
+        ("pack.yaml", &b"name: legacy"[..]),
+        ("secrets_requirements.json", &b"{not valid json"[..]),
+        ("flows/ignored.ygtc", &b"invalid flow artifact"[..]),
+    ];
+    write_manifest_only_gtpack(&gtpack, &manifest, &extras)?;
+
+    let config = Arc::new(host_config(&bindings_path));
+    let runtime = Arc::new(rt.block_on(PackRuntime::load(
+        &gtpack,
+        Arc::clone(&config),
+        None,
+        None,
+        None,
+        None,
+        Arc::new(RunnerWasiPolicy::new()),
+        greentic_runner_host::secrets::default_manager()?,
+        None,
+        false,
+        ComponentResolution::default(),
+    ))?);
+
+    assert_eq!(runtime.metadata().pack_id, manifest.pack_id.as_str());
+    let flows = rt.block_on(runtime.list_flows())?;
+    assert!(flows.is_empty());
     Ok(())
 }

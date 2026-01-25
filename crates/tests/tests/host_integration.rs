@@ -300,6 +300,7 @@ fn build_runner_components_pack(pack_path: &std::path::Path) -> Result<()> {
     let manifest = PackManifest {
         schema_version: "1.0".into(),
         pack_id: "runner.components.test".parse()?,
+        name: None,
         version: Version::parse("0.0.0")?,
         kind: PackKind::Application,
         publisher: "test".into(),
@@ -386,6 +387,7 @@ nodes:
     let manifest = PackManifest {
         schema_version: "1.0".into(),
         pack_id: "runner.components.test".parse()?,
+        name: None,
         version: Version::parse("0.0.0")?,
         kind: PackKind::Application,
         publisher: "test".into(),
@@ -484,6 +486,7 @@ nodes:
     let manifest = PackManifest {
         schema_version: "1.0".into(),
         pack_id: "runner.state-store.fault".parse()?,
+        name: None,
         version: Version::parse("0.0.0")?,
         kind: PackKind::Application,
         publisher: "test".into(),
@@ -537,12 +540,12 @@ nodes:
 
 fn write_overlay_index(path: &std::path::Path, include_overlay: bool) -> Result<()> {
     const DEMO_DIGEST: &str =
-        "sha256:c6ba298a9a4154f8fff7486b6594b4235a771b525824bfe48e691ed16ff8ab37";
+        "sha256:a3195ff0a9befb0192ef4fa7f5aa7fea944c9a9fa58aa25a4e80e9e80b5c36c1";
     let pack_path = fixture_path("examples/packs/demo.gtpack");
     let mut overlays = Vec::new();
     if include_overlay {
         overlays.push(serde_json::json!({
-            "name": "ai.greentic.runner.overlay",
+            "name": "runner.components",
             "version": "0.1.0",
             "locator": pack_path.display().to_string(),
             "digest": DEMO_DIGEST
@@ -551,7 +554,7 @@ fn write_overlay_index(path: &std::path::Path, include_overlay: bool) -> Result<
     let index = serde_json::json!({
         "acme": {
             "main_pack": {
-                "name": "ai.greentic.runner.example",
+                "name": "runner.components",
                 "version": "0.1.0",
                 "locator": pack_path.display().to_string(),
                 "digest": DEMO_DIGEST

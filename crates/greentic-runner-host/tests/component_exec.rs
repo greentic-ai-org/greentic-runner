@@ -204,6 +204,7 @@ fn build_pack(flow_yaml: &str, pack_path: &Path) -> Result<()> {
     let manifest = PackManifest {
         schema_version: "1.0".into(),
         pack_id: "component.exec.test".parse()?,
+        name: None,
         version: Version::parse("0.0.0")?,
         kind: PackKind::Application,
         publisher: "test".into(),
@@ -286,6 +287,7 @@ fn build_pack_with_runtime_extension(
     let manifest = PackManifest {
         schema_version: "1.0".into(),
         pack_id: "component.exec.runtime".parse()?,
+        name: None,
         version: Version::parse("0.0.0")?,
         kind: PackKind::Application,
         publisher: "test".into(),

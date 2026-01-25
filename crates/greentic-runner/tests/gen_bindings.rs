@@ -39,6 +39,7 @@ fn write_manifest_cbor(dir: &Path) -> PathBuf {
     let manifest = PackManifest {
         schema_version: "greentic.pack-manifest.v1".to_string(),
         pack_id: "demo.pack".parse::<PackId>().expect("pack id"),
+        name: None,
         version: Version::new(0, 1, 0),
         kind: PackKind::Application,
         publisher: "demo".to_string(),

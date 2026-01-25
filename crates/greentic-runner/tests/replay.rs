@@ -113,6 +113,7 @@ nodes:
     let manifest = PackManifest {
         schema_version: "1.0".into(),
         pack_id: "runner.components.test".parse()?,
+        name: None,
         version: Version::parse("0.0.0")?,
         kind: PackKind::Application,
         publisher: "test".into(),

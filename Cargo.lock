@@ -1855,9 +1855,9 @@ dependencies = [
 
 [[package]]
 name = "greentic-secrets-lib"
-version = "0.4.14"
+version = "0.4.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f16532b42f026c329e43f40f2a176a7dfa2b0db55cb7bc12a64435558590530e"
+checksum = "f06ae8cf91cd5ddb21f474c99cf3afc9b912a3c567e1482b0d3840d88336fe15"
 dependencies = [
  "async-trait",
  "greentic-secrets-api",
@@ -3328,7 +3328,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.59.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]

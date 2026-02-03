@@ -374,7 +374,7 @@ impl HostState {
             return Ok(value);
         }
         let ctx = self.config.tenant_ctx();
-        let bytes = read_secret_blocking(&self.secrets, &ctx, key)
+        let bytes = read_secret_blocking(&self.secrets, &ctx, &self.pack_id, key)
             .context("failed to read secret from manager")?;
         let value = String::from_utf8(bytes).context("secret value is not valid UTF-8")?;
         Ok(value)
@@ -564,6 +564,45 @@ impl HostState {
     }
 }
 
+fn canonicalize_wasm_secret_key(raw: &str) -> String {
+    raw.trim()
+        .chars()
+        .map(|ch| {
+            let ch = ch.to_ascii_lowercase();
+            match ch {
+                'a'..='z' | '0'..='9' | '_' => ch,
+                _ => '_',
+            }
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod canonicalize_tests {
+    use super::canonicalize_wasm_secret_key;
+
+    #[test]
+    fn upper_snake_to_lower_snake() {
+        assert_eq!(
+            canonicalize_wasm_secret_key("TELEGRAM_BOT_TOKEN"),
+            "telegram_bot_token"
+        );
+    }
+
+    #[test]
+    fn trim_and_replace_non_alphanumeric() {
+        assert_eq!(
+            canonicalize_wasm_secret_key("  webex-bot-token  "),
+            "webex_bot_token"
+        );
+    }
+
+    #[test]
+    fn preserve_existing_lower_snake_with_extra_underscores() {
+        assert_eq!(canonicalize_wasm_secret_key("MiXeD__Case"), "mixed__case");
+    }
+}
+
 impl SecretsStoreHost for HostState {
     fn get(&mut self, key: String) -> Result<Option<Vec<u8>>, SecretsError> {
         if provider_core_only::is_enabled() {
@@ -579,10 +618,11 @@ impl SecretsStoreHost for HostState {
             return Ok(Some(value.into_bytes()));
         }
         let ctx = self.config.tenant_ctx();
-        match read_secret_blocking(&self.secrets, &ctx, &key) {
+        let canonical_key = canonicalize_wasm_secret_key(&key);
+        match read_secret_blocking(&self.secrets, &ctx, &self.pack_id, &canonical_key) {
             Ok(bytes) => Ok(Some(bytes)),
             Err(err) => {
-                warn!(secret = %key, error = %err, "secret lookup failed");
+                warn!(secret = %key, canonical = %canonical_key, error = %err, "secret lookup failed");
                 Err(SecretsError::NotFound)
             }
         }
@@ -604,10 +644,11 @@ impl SecretsStoreHostV1_1 for HostState {
             return Ok(Some(value.into_bytes()));
         }
         let ctx = self.config.tenant_ctx();
-        match read_secret_blocking(&self.secrets, &ctx, &key) {
+        let canonical_key = canonicalize_wasm_secret_key(&key);
+        match read_secret_blocking(&self.secrets, &ctx, &self.pack_id, &canonical_key) {
             Ok(bytes) => Ok(Some(bytes)),
             Err(err) => {
-                warn!(secret = %key, error = %err, "secret lookup failed");
+                warn!(secret = %key, canonical = %canonical_key, error = %err, "secret lookup failed");
                 Err(SecretsErrorV1_1::NotFound)
             }
         }
@@ -631,8 +672,11 @@ impl SecretsStoreHostV1_1 for HostState {
             panic!("secret write denied for key {key}: policy");
         }
         let ctx = self.config.tenant_ctx();
-        if let Err(err) = write_secret_blocking(&self.secrets, &ctx, &key, &value) {
-            warn!(secret = %key, error = %err, "secret write failed");
+        let canonical_key = canonicalize_wasm_secret_key(&key);
+        if let Err(err) =
+            write_secret_blocking(&self.secrets, &ctx, &self.pack_id, &canonical_key, &value)
+        {
+            warn!(secret = %key, canonical = %canonical_key, error = %err, "secret write failed");
             panic!("secret write failed for key {key}");
         }
     }
@@ -1935,7 +1979,13 @@ impl PackRuntime {
                     }
                 }
                 let ctx = self.config.tenant_ctx();
-                read_secret_blocking(&self.secrets, &ctx, req.key.as_str()).is_err()
+                read_secret_blocking(
+                    &self.secrets,
+                    &ctx,
+                    &self.metadata.pack_id,
+                    req.key.as_str(),
+                )
+                .is_err()
             })
             .cloned()
             .collect()

@@ -28,7 +28,7 @@ use crate::config::{HostConfig, SecretsPolicy};
 use crate::pack::FlowDescriptor;
 use crate::runner::engine::{FlowContext, FlowEngine, FlowSnapshot, FlowStatus, FlowWait};
 use crate::runner::mocks::MockLayer;
-use crate::secrets::{DynSecretsManager, scoped_secret_path};
+use crate::secrets::{DynSecretsManager, read_secret_blocking};
 use crate::storage::session::DynSessionStore;
 use crate::trace::{PackTraceInfo, TraceContext, TraceMode, TraceRecorder};
 
@@ -452,6 +452,8 @@ impl PolicySecretsHost {
     }
 }
 
+const POLICY_SECRETS_PACK_ID: &str = "_runner";
+
 #[async_trait]
 impl SecretsHost for PolicySecretsHost {
     async fn get(&self, name: &str) -> GResult<String> {
@@ -460,17 +462,15 @@ impl SecretsHost for PolicySecretsHost {
                 reason: format!("secret {name} denied by policy"),
             });
         }
-        let scoped_key =
-            scoped_secret_path(&self.tenant_ctx, name).map_err(|err| RunnerError::Secrets {
-                reason: format!("secret {name} scope invalid: {err}"),
-            })?;
-        let bytes = self
-            .manager
-            .read(scoped_key.as_str())
-            .await
-            .map_err(|err| RunnerError::Secrets {
-                reason: format!("secret {name} unavailable: {err}"),
-            })?;
+        let bytes = read_secret_blocking(
+            &self.manager,
+            &self.tenant_ctx,
+            POLICY_SECRETS_PACK_ID,
+            name,
+        )
+        .map_err(|err| RunnerError::Secrets {
+            reason: format!("secret {name} unavailable: {err}"),
+        })?;
         String::from_utf8(bytes).map_err(|err| RunnerError::Secrets {
             reason: format!("secret {name} not valid UTF-8: {err}"),
         })

@@ -49,7 +49,20 @@ pub fn default_manager() -> Result<DynSecretsManager> {
     SecretsBackend::Env.build_manager()
 }
 
-pub fn scoped_secret_path(ctx: &TenantCtx, key: &str) -> Result<String> {
+fn normalize_pack_segment(pack_id: &str) -> String {
+    pack_id
+        .chars()
+        .map(|ch| {
+            let ch = ch.to_ascii_lowercase();
+            match ch {
+                'a'..='z' | '0'..='9' | '_' | '-' => ch,
+                _ => '_',
+            }
+        })
+        .collect()
+}
+
+pub fn scoped_secret_path_for_pack(ctx: &TenantCtx, pack_id: &str, key: &str) -> Result<String> {
     let key = key.trim();
     if key.is_empty() {
         return Err(anyhow!("secret key must not be empty"));
@@ -68,18 +81,24 @@ pub fn scoped_secret_path(ctx: &TenantCtx, key: &str) -> Result<String> {
         team: team.map(|value| value.as_str().to_string()),
     };
     let team_segment = scope.team.as_deref().unwrap_or("_");
+    let pack_segment = pack_id.trim();
+    if pack_segment.is_empty() {
+        return Err(anyhow!("pack_id must not be empty for scoped secrets"));
+    }
+    let pack_segment = normalize_pack_segment(pack_segment);
     Ok(format!(
-        "secrets://{}/{}/{}/kv/{}",
-        scope.env, scope.tenant, team_segment, name
+        "secrets://{}/{}/{}/{}/{}",
+        scope.env, scope.tenant, team_segment, pack_segment, name
     ))
 }
 
 pub fn read_secret_blocking(
     manager: &DynSecretsManager,
     ctx: &TenantCtx,
+    pack_id: &str,
     key: &str,
 ) -> Result<Vec<u8>> {
-    let scoped_key = scoped_secret_path(ctx, key)?;
+    let scoped_key = scoped_secret_path_for_pack(ctx, pack_id, key)?;
     let bytes =
         block_on(manager.read(scoped_key.as_str())).map_err(|err| anyhow!(err.to_string()))?;
     Ok(bytes)
@@ -88,10 +107,11 @@ pub fn read_secret_blocking(
 pub fn write_secret_blocking(
     manager: &DynSecretsManager,
     ctx: &TenantCtx,
+    pack_id: &str,
     key: &str,
     value: &[u8],
 ) -> Result<()> {
-    let scoped_key = scoped_secret_path(ctx, key)?;
+    let scoped_key = scoped_secret_path_for_pack(ctx, pack_id, key)?;
     block_on(manager.write(scoped_key.as_str(), value)).map_err(|err| anyhow!(err.to_string()))?;
     Ok(())
 }

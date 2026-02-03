@@ -3,10 +3,14 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use async_trait::async_trait;
-use greentic_runner_host::secrets::{DynSecretsManager, read_secret_blocking, scoped_secret_path};
+use greentic_runner_host::secrets::{
+    DynSecretsManager, read_secret_blocking, scoped_secret_path_for_pack,
+};
 use greentic_secrets_lib::{SecretError, SecretsManager};
 use greentic_types::{EnvId, TenantCtx, TenantId, UserId};
 use parking_lot::RwLock;
+
+const TEST_PACK_ID: &str = "scoping";
 
 #[derive(Default)]
 struct MemorySecretsManager {
@@ -53,15 +57,15 @@ fn tenant_scoped_secret_reads_do_not_cross() -> Result<()> {
     let ctx_a = tenant_ctx("local", "tenant-a", None);
     let ctx_b = tenant_ctx("local", "tenant-b", None);
 
-    let scoped_a = scoped_secret_path(&ctx_a, key)?;
+    let scoped_a = scoped_secret_path_for_pack(&ctx_a, TEST_PACK_ID, key)?;
     manager_impl
         .values
         .write()
         .insert(scoped_a.clone(), b"alpha".to_vec());
 
-    let value = read_secret_blocking(&manager, &ctx_a, key)?;
+    let value = read_secret_blocking(&manager, &ctx_a, TEST_PACK_ID, key)?;
     assert_eq!(value, b"alpha".to_vec());
-    assert!(read_secret_blocking(&manager, &ctx_b, key).is_err());
+    assert!(read_secret_blocking(&manager, &ctx_b, TEST_PACK_ID, key).is_err());
     Ok(())
 }
 
@@ -72,13 +76,13 @@ fn user_scoped_secret_reads_include_user_prefix() -> Result<()> {
     let key = "SESSION_TOKEN";
     let ctx = tenant_ctx("local", "tenant-a", Some("user-1"));
 
-    let scoped = scoped_secret_path(&ctx, key)?;
+    let scoped = scoped_secret_path_for_pack(&ctx, TEST_PACK_ID, key)?;
     manager_impl
         .values
         .write()
         .insert(scoped.clone(), b"token".to_vec());
 
-    let value = read_secret_blocking(&manager, &ctx, key)?;
+    let value = read_secret_blocking(&manager, &ctx, TEST_PACK_ID, key)?;
     assert_eq!(value, b"token".to_vec());
     Ok(())
 }

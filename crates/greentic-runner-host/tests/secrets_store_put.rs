@@ -5,11 +5,13 @@ use async_trait::async_trait;
 use greentic_interfaces_wasmtime::host_helpers::v1::secrets_store::SecretsStoreHostV1_1;
 use greentic_runner_host::config::HostConfig;
 use greentic_runner_host::pack::HostState;
-use greentic_runner_host::secrets::{DynSecretsManager, scoped_secret_path};
+use greentic_runner_host::secrets::{DynSecretsManager, scoped_secret_path_for_pack};
 use greentic_secrets_lib::{SecretError, SecretsManager};
 use reqwest::blocking::Client as BlockingClient;
 use serial_test::serial;
 use tempfile::TempDir;
+
+const SECRETS_STORE_PACK_ID: &str = "secrets-store-put";
 
 #[derive(Default)]
 struct RecordingSecretsManager {
@@ -58,7 +60,8 @@ fn secrets_store_put_allows_write_when_policy_allows() -> Result<()> {
 
     let writes = manager.writes.lock().expect("writes lock");
     assert_eq!(writes.len(), 1);
-    let expected_path = scoped_secret_path(&config.tenant_ctx(), "demo-key")?;
+    let expected_path =
+        scoped_secret_path_for_pack(&config.tenant_ctx(), SECRETS_STORE_PACK_ID, "demo_key")?;
     assert_eq!(writes[0].0, expected_path);
     assert!(
         writes[0].1.as_slice() == b"value",

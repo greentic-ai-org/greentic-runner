@@ -32,6 +32,7 @@ use greentic_types::SecretRequirement;
 
 const TELEGRAM_CACHE_CAPACITY: usize = 1024;
 const WEBHOOK_CACHE_CAPACITY: usize = 256;
+const RUNTIME_SECRETS_PACK_ID: &str = "_runner";
 
 /// Atomically swapped view of live tenant runtimes.
 pub struct ActivePacks {
@@ -330,7 +331,7 @@ impl TenantRuntime {
             bail!("secret {key} is not permitted by bindings policy");
         }
         let ctx = self.config.tenant_ctx();
-        let bytes = read_secret_blocking(&self.secrets, &ctx, key)
+        let bytes = read_secret_blocking(&self.secrets, &ctx, RUNTIME_SECRETS_PACK_ID, key)
             .context("failed to read secret from manager")?;
         let value = String::from_utf8(bytes).context("secret value is not valid UTF-8")?;
         Ok(value)

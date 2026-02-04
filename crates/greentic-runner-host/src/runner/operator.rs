@@ -17,7 +17,6 @@ use crate::routing::TenantRuntimeHandle;
 use crate::runtime::TenantRuntime;
 
 const CONTENT_TYPE_CBOR: &str = "application/cbor";
-const OPERATOR_BODY_LIMIT: usize = 16 * 1024 * 1024;
 
 /// Operator-facing invocation payload (CBOR envelope).
 #[derive(Debug, Deserialize)]
@@ -408,7 +407,7 @@ pub async fn invoke(
     _headers: HeaderMap,
     body: Body,
 ) -> Result<Response<Body>, Response<Body>> {
-    let bytes = match to_bytes(body, OPERATOR_BODY_LIMIT).await {
+    let bytes = match to_bytes(body, usize::MAX).await {
         Ok(bytes) => bytes,
         Err(err) => {
             return Err(bad_request(format!("failed to read body: {err}")));

@@ -97,7 +97,8 @@ impl NodeGuest for NodeImpl {
             });
         }
         let parsed: Value = serde_json::from_str(&input).unwrap_or(Value::Null);
-        let wrapped = serde_json::json!({ "echo": parsed });
+        let payload = decode_payload(&parsed);
+        let wrapped = serde_json::json!({ "echo": payload });
         InvokeResult::Ok(serde_json::to_string(&wrapped).unwrap())
     }
 
@@ -108,4 +109,21 @@ impl NodeGuest for NodeImpl {
     ) -> Vec<StreamEvent> {
         Vec::new()
     }
+}
+
+fn decode_payload(value: &Value) -> Value {
+    if let Value::Object(map) = value {
+        if let Some(Value::Array(bytes)) = map.get("payload") {
+            let maybe_vec: Option<Vec<u8>> = bytes
+                .iter()
+                .map(|entry| entry.as_u64().map(|num| num as u8))
+                .collect();
+            if let Some(vec) = maybe_vec {
+                if let Ok(decoded) = serde_json::from_slice::<Value>(&vec) {
+                    return decoded;
+                }
+            }
+        }
+    }
+    value.clone()
 }

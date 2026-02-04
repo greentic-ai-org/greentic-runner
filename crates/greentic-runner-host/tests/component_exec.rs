@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use greentic_flow::flow_bundle::load_and_validate_bundle_with_flow;
 use greentic_runner_host::config::{
     FlowRetryConfig, HostConfig, OperatorPolicy, RateLimits, SecretsPolicy, StateStorePolicy,
@@ -14,13 +14,13 @@ use greentic_runner_host::trace::TraceConfig;
 use greentic_runner_host::validate::ValidationConfig;
 use greentic_types::{
     ComponentCapabilities, ComponentManifest, ComponentProfiles, ExtensionInline, ExtensionRef,
-    Flow, FlowComponentRef, FlowId, FlowKind, InputMapping, Node, NodeId, OutputMapping,
-    PackFlowEntry, PackKind, PackManifest, ResourceHints, Routing, TelemetryHints,
+    Flow, FlowComponentRef, FlowId, FlowKind, FlowMetadata, InputMapping, Node, NodeId,
+    OutputMapping, PackFlowEntry, PackKind, PackManifest, ResourceHints, Routing, TelemetryHints,
     encode_pack_manifest,
 };
 use once_cell::sync::Lazy;
 use semver::Version;
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::collections::{BTreeMap, HashMap};
 use std::fs::File;
 use std::io::{Read, Write};
@@ -252,6 +252,91 @@ fn build_pack(flow_yaml: &str, pack_path: &Path) -> Result<()> {
     Ok(())
 }
 
+fn build_component_exec_flow_with_input(flow_id: &str, input: Value) -> Result<Flow> {
+    let node_id = NodeId::from_str("run").context("build node id")?;
+    let mut nodes = HashMap::new();
+    nodes.insert(
+        node_id.clone(),
+        Node {
+            id: node_id.clone(),
+            component: FlowComponentRef {
+                id: "qa.process".parse()?,
+                pack_alias: None,
+                operation: Some("process".into()),
+            },
+            input: InputMapping { mapping: input },
+            output: OutputMapping {
+                mapping: Value::Null,
+            },
+            routing: Routing::End,
+            telemetry: TelemetryHints::default(),
+        },
+    );
+    Ok(Flow {
+        schema_version: "1.0".into(),
+        id: FlowId::from_str(flow_id)?,
+        kind: FlowKind::Messaging,
+        entrypoints: BTreeMap::from([("default".into(), Value::String(node_id.to_string()))]),
+        nodes: nodes.into_iter().collect(),
+        metadata: FlowMetadata::default(),
+    })
+}
+
+fn build_pack_with_flow_id(pack_id: &str, flow: Flow, pack_path: &Path) -> Result<()> {
+    let component_path = component_artifact_path(
+        pack_path
+            .parent()
+            .expect("pack path should have parent for temp dir"),
+    )?;
+    let manifest = PackManifest {
+        schema_version: "1.0".into(),
+        pack_id: pack_id.parse()?,
+        name: None,
+        version: Version::parse("0.0.0")?,
+        kind: PackKind::Application,
+        publisher: "test".into(),
+        components: vec![ComponentManifest {
+            id: "qa.process".parse()?,
+            version: Version::parse("0.1.0")?,
+            supports: vec![FlowKind::Messaging],
+            world: "greentic:component@0.4.0".into(),
+            profiles: ComponentProfiles::default(),
+            capabilities: ComponentCapabilities::default(),
+            configurators: None,
+            operations: Vec::new(),
+            config_schema: None,
+            resources: ResourceHints::default(),
+            dev_flows: BTreeMap::new(),
+        }],
+        flows: vec![PackFlowEntry {
+            id: flow.id.clone(),
+            kind: flow.kind,
+            flow,
+            tags: Vec::new(),
+            entrypoints: vec!["default".into()],
+        }],
+        dependencies: Vec::new(),
+        capabilities: Vec::new(),
+        signatures: Default::default(),
+        secret_requirements: Vec::new(),
+        bootstrap: None,
+        extensions: None,
+    };
+
+    let mut zip = zip::ZipWriter::new(File::create(pack_path).context("create pack archive")?);
+    let options: FileOptions<'_, ()> =
+        FileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    let manifest_bytes = encode_pack_manifest(&manifest)?;
+    zip.start_file("manifest.cbor", options)?;
+    zip.write_all(&manifest_bytes)?;
+
+    zip.start_file("components/qa.process.wasm", options)?;
+    let mut comp_file = File::open(&component_path)?;
+    std::io::copy(&mut comp_file, &mut zip)?;
+    zip.finish().context("finalise pack archive")?;
+    Ok(())
+}
+
 fn build_pack_with_runtime_extension(
     manifest_flows: Vec<Flow>,
     runtime_extension: Value,
@@ -437,11 +522,181 @@ nodes:
         }
     }
 
-    let output_str = execution.output.to_string();
-    assert!(
-        output_str.contains("hello"),
-        "expected qa.process to run; output was {output_str}"
-    );
+    let payload = envelope_payload(&execution.output)?;
+    assert_eq!(payload, json!({ "text": "hello" }));
+    Ok(())
+}
+
+#[test]
+fn component_exec_always_serializes_invocation_envelope() -> Result<()> {
+    let rt = *RUNTIME;
+    let config_temp = TempDir::new()?;
+    let bindings_path = config_temp.path().join("bindings.yaml");
+    std::fs::write(
+        &bindings_path,
+        b"tenant: demo\n\
+flow_type_bindings: {}\n\
+rate_limits: {}\n\
+retry: {}\n\
+timers: []\n",
+    )?;
+    let config = Arc::new(host_config(&bindings_path));
+    let retry_config = config.retry.clone().into();
+    let pack_dir = TempDir::new()?;
+
+    struct InvocationCase {
+        suffix: &'static str,
+        input: Value,
+        expected_payload: Value,
+        expected_metadata: Value,
+    }
+
+    let cases = vec![
+        InvocationCase {
+            suffix: "envelope",
+            input: json!({
+                "envelope": {
+                    "ctx": {
+                        "tenant": "spoof",
+                        "env": "spoof-env",
+                        "flow_id": "spoof.flow",
+                        "node_id": "spoof.node",
+                        "provider_id": "spoof.provider"
+                    },
+                    "flow_id": "spoof.flow",
+                    "node_id": "spoof.node",
+                    "op": "process",
+                    "payload": { "message": "from envelope" },
+                    "metadata": { "source": "envelope" }
+                }
+            }),
+            expected_payload: json!({ "message": "from envelope" }),
+            expected_metadata: json!({ "source": "envelope" }),
+        },
+        InvocationCase {
+            suffix: "partial",
+            input: json!({
+                "op": "process",
+                "payload": { "message": "partial" },
+                "metadata": { "source": "partial" }
+            }),
+            expected_payload: json!({ "message": "partial" }),
+            expected_metadata: json!({ "source": "partial" }),
+        },
+    ];
+
+    for case in cases {
+        let flow_id = format!("ctx.flow.{}", case.suffix);
+        let flow = build_component_exec_flow_with_input(&flow_id, case.input.clone())?;
+        let pack_path = pack_dir
+            .path()
+            .join(format!("component.exec.ctx.{}.gtpack", case.suffix));
+        build_pack_with_flow_id(
+            &format!("component.exec.ctx.{}", case.suffix),
+            flow.clone(),
+            &pack_path,
+        )?;
+
+        let pack = Arc::new(rt.block_on(PackRuntime::load(
+            &pack_path,
+            Arc::clone(&config),
+            None,
+            Some(&pack_path),
+            None,
+            None,
+            Arc::new(greentic_runner_host::wasi::RunnerWasiPolicy::new()),
+            greentic_runner_host::secrets::default_manager()?,
+            None,
+            false,
+            ComponentResolution::default(),
+        ))?);
+        let engine = rt.block_on(FlowEngine::new(
+            vec![Arc::clone(&pack)],
+            Arc::clone(&config),
+        ))?;
+
+        let ctx = FlowContext {
+            tenant: config.tenant.as_str(),
+            pack_id: pack.metadata().pack_id.as_str(),
+            flow_id: flow.id.as_str(),
+            node_id: None,
+            tool: None,
+            action: None,
+            session_id: None,
+            provider_id: None,
+            retry_config,
+            attempt: 1,
+            observer: None,
+            mocks: None,
+        };
+
+        let execution = rt
+            .block_on(engine.execute(ctx, Value::Null))
+            .context("execute component.exec flow")?;
+        match execution.status {
+            FlowStatus::Completed => {}
+            other => panic!("flow {} paused unexpectedly: {:?}", flow.id, other),
+        }
+
+        let envelope_value = execution.output;
+        let envelope = envelope_value
+            .as_object()
+            .context("expected component output object")?;
+        assert_eq!(
+            envelope
+                .get("flow_id")
+                .and_then(Value::as_str)
+                .context("envelope flow_id missing")?,
+            flow.id.as_str()
+        );
+        assert_eq!(
+            envelope
+                .get("node_id")
+                .and_then(Value::as_str)
+                .context("envelope node_id missing")?,
+            "run"
+        );
+        assert_eq!(
+            envelope
+                .get("op")
+                .and_then(Value::as_str)
+                .context("envelope op missing")?,
+            "process"
+        );
+
+        let ctx_value = envelope
+            .get("ctx")
+            .and_then(Value::as_object)
+            .context("ctx missing")?;
+        assert_eq!(
+            ctx_value
+                .get("tenant")
+                .and_then(Value::as_str)
+                .context("ctx tenant missing")?,
+            config.tenant.as_str()
+        );
+        assert_eq!(
+            ctx_value
+                .get("flow_id")
+                .and_then(Value::as_str)
+                .context("ctx flow_id missing")?,
+            flow.id.as_str()
+        );
+        assert_eq!(
+            ctx_value
+                .get("node_id")
+                .and_then(Value::as_str)
+                .context("ctx node_id missing")?,
+            "run"
+        );
+
+        let payload = decode_binary_value(envelope.get("payload").context("payload missing")?)?;
+        assert_eq!(payload, case.expected_payload);
+
+        let metadata = decode_binary_value(envelope.get("metadata").context("metadata missing")?)?;
+        assert_eq!(metadata, case.expected_metadata);
+    }
+
     Ok(())
 }
 
@@ -600,6 +855,37 @@ fn runtime_extension_flow_overrides_manifest_flow() -> Result<()> {
         }
     }
 
-    assert_eq!(execution.output["message"], serde_json::json!("resolved"));
+    let payload = envelope_payload(&execution.output)?;
+    assert_eq!(payload["message"], serde_json::json!("resolved"));
     Ok(())
+}
+
+fn decode_binary_value(value: &Value) -> Result<Value> {
+    let bytes = to_bytes(value)?;
+    serde_json::from_slice(&bytes).context("decode binary payload")
+}
+
+fn to_bytes(value: &Value) -> Result<Vec<u8>> {
+    let array = value.as_array().context("binary payload is not an array")?;
+    let mut bytes = Vec::with_capacity(array.len());
+    for entry in array {
+        let num = entry
+            .as_u64()
+            .context("binary payload entry is not an integer")?;
+        if num > u64::from(u8::MAX) {
+            return Err(anyhow!("binary payload entry {} exceeds byte range", num));
+        }
+        bytes.push(num as u8);
+    }
+    Ok(bytes)
+}
+
+fn envelope_payload(value: &Value) -> Result<Value> {
+    let envelope = value
+        .as_object()
+        .context("expected component output envelope")?;
+    let payload_value = envelope
+        .get("payload")
+        .context("envelope payload missing")?;
+    decode_binary_value(payload_value)
 }

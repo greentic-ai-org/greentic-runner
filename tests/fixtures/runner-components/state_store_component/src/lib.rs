@@ -30,7 +30,8 @@ impl NodeGuest for StateStoreComponent {
 
     fn invoke(_ctx: ExecCtx, op: String, input: String) -> InvokeResult {
         let parsed: Value = serde_json::from_str(&input).unwrap_or(Value::Null);
-        let key = parsed
+        let payload = extract_payload(&parsed);
+        let key = payload
             .get("key")
             .and_then(Value::as_str)
             .unwrap_or("default")
@@ -38,7 +39,7 @@ impl NodeGuest for StateStoreComponent {
 
         match op.as_str() {
             "write" => {
-                let value = parsed.get("value").cloned().unwrap_or(Value::Null);
+                let value = payload.get("value").cloned().unwrap_or(Value::Null);
                 let bytes = serde_json::to_vec(&value).unwrap_or_default();
                 if let Err(err) = state_store::write(&key, &bytes, None) {
                     return InvokeResult::Err(map_state_error(err));
@@ -85,3 +86,20 @@ fn map_state_error(err: state_store::HostError) -> NodeError {
 }
 
 export!(StateStoreComponent);
+
+fn extract_payload(value: &Value) -> Value {
+    if let Value::Object(map) = value {
+        if let Some(Value::Array(bytes)) = map.get("payload") {
+            let maybe_vec: Option<Vec<u8>> = bytes
+                .iter()
+                .map(|entry| entry.as_u64().map(|num| num as u8))
+                .collect();
+            if let Some(vec) = maybe_vec {
+                if let Ok(decoded) = serde_json::from_slice::<Value>(&vec) {
+                    return decoded;
+                }
+            }
+        }
+    }
+    value.clone()
+}

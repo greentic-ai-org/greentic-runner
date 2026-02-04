@@ -97,12 +97,30 @@ impl NodeGuest for Qa {
             });
         }
         let parsed: Value = serde_json::from_str(&input).unwrap_or(Value::Null);
-        InvokeResult::Ok(serde_json::to_string(&parsed).unwrap())
+        let payload = extract_payload(&parsed);
+        InvokeResult::Ok(serde_json::to_string(&payload).unwrap())
     }
 
     fn invoke_stream(_ctx: ExecCtx, _op: String, _input: String) -> Vec<StreamEvent> {
         Vec::new()
     }
+}
+
+fn extract_payload(value: &Value) -> Value {
+    if let Value::Object(map) = value {
+        if let Some(Value::Array(bytes)) = map.get("payload") {
+            let maybe_vec: Option<Vec<u8>> = bytes
+                .iter()
+                .map(|entry| entry.as_u64().map(|num| num as u8))
+                .collect();
+            if let Some(vec) = maybe_vec {
+                if let Ok(decoded) = serde_json::from_slice::<Value>(&vec) {
+                    return decoded;
+                }
+            }
+        }
+    }
+    value.clone()
 }
 
 export!(Qa);

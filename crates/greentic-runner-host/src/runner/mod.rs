@@ -9,6 +9,7 @@ pub mod adapt_whatsapp;
 pub mod engine;
 pub mod flow_adapter;
 pub mod ingress_util;
+pub mod invocation;
 pub mod mocks;
 pub mod operator;
 pub mod templating;

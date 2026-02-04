@@ -17,6 +17,7 @@ use super::mocks::MockLayer;
 use super::templating::{TemplateOptions, render_template_value};
 use crate::config::{FlowRetryConfig, HostConfig};
 use crate::pack::{FlowDescriptor, PackRuntime};
+use crate::runner::invocation::{InvocationMeta, build_invocation_envelope};
 use crate::telemetry::{FlowSpanAttributes, annotate_span, backoff_delay_ms, set_flow_context};
 #[cfg(feature = "fault-injection")]
 use crate::testing::fault_injection::{FaultContext, FaultPoint, maybe_fail};
@@ -698,7 +699,20 @@ impl FlowEngine {
         event: &NodeEvent<'_>,
     ) -> Result<NodeOutput> {
         self.validate_component(ctx, event, &call)?;
-        let input_json = serde_json::to_string(&call.input)?;
+        // Runtime owns ctx; flows must not embed ctx, even if they provide envelopes.
+        let meta = InvocationMeta {
+            env: &self.default_env,
+            tenant: ctx.tenant,
+            flow_id: ctx.flow_id,
+            node_id: Some(node_id),
+            provider_id: ctx.provider_id,
+            session_id: ctx.session_id,
+            attempt: ctx.attempt,
+        };
+        let invocation_envelope =
+            build_invocation_envelope(meta, call.operation.as_str(), call.input)
+                .context("build invocation envelope for component call")?;
+        let input_json = serde_json::to_string(&invocation_envelope)?;
         let config_json = if call.config.is_null() {
             None
         } else {

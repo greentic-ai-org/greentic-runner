@@ -268,7 +268,8 @@ async fn component_exec_carries_operation_from_flow() -> Result<()> {
         greentic_runner_host::runner::engine::FlowStatus::Completed => {}
         other => panic!("flow should complete, got {other:?}"),
     }
-    assert_eq!(execution.output["message"], json!("pack B"));
+    let payload = envelope_payload(&execution.output)?;
+    assert_eq!(payload["message"], json!("pack B"));
     Ok(())
 }
 
@@ -428,6 +429,36 @@ fn component_artifact_path(temp_dir: &Path) -> Result<PathBuf> {
     wasm.read_to_end(&mut buf)?;
     std::fs::write(&out, &buf)?;
     Ok(out)
+}
+
+fn envelope_payload(value: &Value) -> Result<Value> {
+    let envelope = value
+        .as_object()
+        .context("expected component output envelope")?;
+    let payload_value = envelope
+        .get("payload")
+        .context("envelope payload missing")?;
+    decode_binary_value(payload_value)
+}
+
+fn decode_binary_value(value: &Value) -> Result<Value> {
+    let bytes = to_bytes(value)?;
+    serde_json::from_slice(&bytes).context("decode binary payload")
+}
+
+fn to_bytes(value: &Value) -> Result<Vec<u8>> {
+    let array = value.as_array().context("binary payload is not an array")?;
+    let mut bytes = Vec::with_capacity(array.len());
+    for entry in array {
+        let num = entry
+            .as_u64()
+            .context("binary payload entry is not an integer")?;
+        if num > u64::from(u8::MAX) {
+            return Err(anyhow!("binary payload entry {} exceeds byte range", num));
+        }
+        bytes.push(num as u8);
+    }
+    Ok(bytes)
 }
 
 fn provider_extension() -> BTreeMap<String, greentic_types::ExtensionRef> {

@@ -164,20 +164,54 @@ nodes:
 
 fn qa_component_artifact() -> Result<PathBuf> {
     let fixtures_root = fixture_path("tests/fixtures/runner-components");
-    let candidates = [
-        fixtures_root
-            .join("target-test")
-            .join("wasm32-wasip2")
-            .join("release")
-            .join("qa_process.wasm"),
-        fixtures_root
-            .join("target")
-            .join("wasm32-wasip2")
-            .join("release")
-            .join("qa_process.wasm"),
-    ];
-    candidates
-        .into_iter()
-        .find(|path| path.exists())
-        .ok_or_else(|| anyhow::anyhow!("prebuilt qa_process.wasm not found in fixtures"))
+    let target_test = fixtures_root
+        .join("target-test")
+        .join("wasm32-wasip2")
+        .join("release")
+        .join("qa_process.wasm");
+    if target_test.exists() {
+        return Ok(target_test);
+    }
+    let target_default = fixtures_root
+        .join("target")
+        .join("wasm32-wasip2")
+        .join("release")
+        .join("qa_process.wasm");
+    if target_default.exists() {
+        return Ok(target_default);
+    }
+
+    let workspace_manifest = fixtures_root.join("Cargo.toml");
+    let target_dir = fixtures_root.join("target-test");
+    let offline = env::var("CARGO_NET_OFFLINE").ok();
+    let mut cmd = Command::new("cargo");
+    cmd.arg("build")
+        .arg("--release")
+        .arg("--target")
+        .arg("wasm32-wasip2")
+        .arg("--package")
+        .arg("qa_process")
+        .arg("--manifest-path")
+        .arg(&workspace_manifest)
+        .arg("--target-dir")
+        .arg(&target_dir);
+    if matches!(offline.as_deref(), Some("true")) {
+        cmd.arg("--offline");
+    }
+    if let Some(val) = &offline {
+        cmd.env("CARGO_NET_OFFLINE", val);
+    }
+    let status = cmd
+        .status()
+        .with_context(|| format!("build {}", workspace_manifest.display()))?;
+    if !status.success() {
+        anyhow::bail!("failed to build qa_process fixture");
+    }
+    if target_test.exists() {
+        return Ok(target_test);
+    }
+    anyhow::bail!(
+        "qa_process.wasm missing after fixture build: {}",
+        target_test.display()
+    )
 }

@@ -1789,7 +1789,7 @@ dependencies = [
  "tempfile",
  "time",
  "x509-parser",
- "zip",
+ "zip 7.2.0",
 ]
 
 [[package]]
@@ -1832,7 +1832,7 @@ dependencies = [
  "wasmparser 0.244.0",
  "wasmtime",
  "wasmtime-wasi",
- "zip",
+ "zip 8.0.0",
 ]
 
 [[package]]
@@ -1851,7 +1851,7 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
- "zip",
+ "zip 8.0.0",
 ]
 
 [[package]]
@@ -1915,7 +1915,7 @@ dependencies = [
  "wasmtime",
  "wasmtime-environ",
  "wasmtime-wasi",
- "zip",
+ "zip 8.0.0",
 ]
 
 [[package]]
@@ -1938,7 +1938,7 @@ dependencies = [
  "serial_test",
  "tempfile",
  "tokio",
- "zip",
+ "zip 8.0.0",
 ]
 
 [[package]]
@@ -6548,9 +6548,9 @@ dependencies = [
 
 [[package]]
 name = "zip"
-version = "7.4.0"
+version = "7.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cc12baa6db2b15a140161ce53d72209dacea594230798c24774139b54ecaa980"
+checksum = "c42e33efc22a0650c311c2ef19115ce232583abbe80850bc8b66509ebef02de0"
 dependencies = [
  "crc32fast",
  "flate2",
@@ -6558,6 +6558,19 @@ dependencies = [
  "memchr",
  "typed-path",
  "zopfli",
+]
+
+[[package]]
+name = "zip"
+version = "8.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "79b32dd4ad3aca14ae109f8cce0495ac1c57f6f4f00ad459a40e582f89440d97"
+dependencies = [
+ "crc32fast",
+ "flate2",
+ "indexmap 2.12.1",
+ "memchr",
+ "typed-path",
 ]
 
 [[package]]

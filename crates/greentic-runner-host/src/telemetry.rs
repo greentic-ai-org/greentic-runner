@@ -1,6 +1,6 @@
 use greentic_types::telemetry::set_current_tenant_ctx;
 use greentic_types::{EnvId, TenantCtx, TenantId};
-use rand::{Rng, rng};
+use rand::{RngExt, rng};
 use std::str::FromStr;
 use tracing::Span;
 

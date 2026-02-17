@@ -9,7 +9,7 @@ use greentic_types::{
     EnvId, FlowId, GreenticError, PackId, ReplyScope, SessionCursor as TypesSessionCursor,
     TenantCtx, TenantId, UserId,
 };
-use rand::{Rng, rng};
+use rand::{RngExt, rng};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};

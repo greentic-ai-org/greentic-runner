@@ -8,7 +8,7 @@ use super::policy::{Policy, policy_violation};
 use super::registry::{AdapterCall, AdapterRegistry};
 use greentic_types::TenantCtx;
 use parking_lot::RwLock;
-use rand::{Rng, rng};
+use rand::{RngExt, rng};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};

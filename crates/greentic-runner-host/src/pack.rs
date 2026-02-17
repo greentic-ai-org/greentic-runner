@@ -3690,7 +3690,7 @@ async fn load_components_from_sources(
 
 fn dist_error_for_component(err: DistError, component_id: &str, reference: &str) -> anyhow::Error {
     match err {
-        DistError::CacheMiss { reference: missing } => anyhow!(
+        DistError::NotFound { reference: missing } => anyhow!(
             "remote component {} is not cached for {}. Run `greentic-dist pull --lock <pack.lock>` or `greentic-dist pull {}`",
             component_id,
             missing,
@@ -3702,7 +3702,7 @@ fn dist_error_for_component(err: DistError, component_id: &str, reference: &str)
             blocked,
             reference
         ),
-        DistError::AuthRequired { target } => anyhow!(
+        DistError::Unauthorized { target } => anyhow!(
             "component {} requires authenticated source {}; run `greentic-dist pull --lock <pack.lock>` or `greentic-dist pull {}`",
             component_id,
             target,

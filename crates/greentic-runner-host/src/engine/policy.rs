@@ -1,5 +1,5 @@
 use super::error::{GResult, RunnerError};
-use rand::{Rng, rng};
+use rand::{RngExt, rng};
 use std::time::Duration;
 use tokio::time::sleep;
 

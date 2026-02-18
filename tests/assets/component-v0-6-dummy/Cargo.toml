@@ -7,5 +7,5 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
+greentic-interfaces-guest = { version = "0.4.93", default-features = false, features = ["component-v0-6"] }
 serde_json = "1"
-wit-bindgen = "0.48"

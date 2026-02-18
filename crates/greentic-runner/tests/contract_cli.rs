@@ -161,16 +161,34 @@ fn build_component_pack_v06(component_path: &Path, pack_path: &Path) -> Result<(
 }
 
 fn fixture_component_v06_path() -> Result<PathBuf> {
-    let path = workspace_root().join(
-        "tests/assets/component-v0-6-dummy/target/wasm32-wasip2/release/component_v0_6_dummy.wasm",
-    );
-    if !path.exists() {
-        anyhow::bail!(
-            "missing v0.6 component fixture at {} (build tests/assets/component-v0-6-dummy first)",
-            path.display()
-        );
+    let root = workspace_root().join("tests/assets/component-v0-6-dummy");
+    let wasm = root.join("target/wasm32-wasip2/release/component_v0_6_dummy.wasm");
+    if !wasm.exists() {
+        let offline = std::env::var("CARGO_NET_OFFLINE").ok();
+        let mut cmd = Command::new("cargo");
+        let mut args: Vec<String> = vec![
+            "build".into(),
+            "--release".into(),
+            "--target".into(),
+            "wasm32-wasip2".into(),
+            "--manifest-path".into(),
+            root.join("Cargo.toml")
+                .to_str()
+                .expect("manifest path")
+                .into(),
+        ];
+        if matches!(offline.as_deref(), Some("true")) {
+            args.insert(1, "--offline".into());
+        }
+        if let Some(val) = &offline {
+            cmd.env("CARGO_NET_OFFLINE", val);
+        }
+        let status = cmd.args(&args).status().context("build v0.6 component")?;
+        if !status.success() {
+            anyhow::bail!("failed to build component-v0-6 fixture");
+        }
     }
-    Ok(path)
+    Ok(wasm)
 }
 
 fn fixture_path(name: &str) -> PathBuf {
